@@ -3,6 +3,7 @@ import sys
 import time
 import logging
 import cv2
+import numpy as np
 from PySide6.QtCore import Qt, QThread, Signal, Slot, QTimer
 from PySide6.QtGui import QImage, QPixmap, QFont, QColor
 from PySide6.QtWidgets import (
@@ -19,9 +20,10 @@ logger = logging.getLogger("PatientApp")
 
 class CameraTestDialog(QDialog):
     """Interactive Camera & QR/Barcode Test Dialog with Live Visual Tracking & Multi-Engine Barcode Scanner"""
-    def __init__(self, parent=None, camera_index=0):
+    def __init__(self, parent=None, camera_index=0, camera_thread=None):
         super().__init__(parent)
         self.camera_index = camera_index
+        self.camera_thread = camera_thread
         self.setWindowTitle(f"📷 TEST HỆ THỐNG CAMERA (CỔNG INDEX {camera_index})")
         self.resize(800, 600)
         self.setModal(True)
@@ -32,7 +34,7 @@ class CameraTestDialog(QDialog):
         self.frame_count = 0
         
         self.setup_ui()
-        self.start_camera()
+        self.start_camera_test()
 
     def setup_ui(self):
         layout = QVBoxLayout(self)
@@ -56,7 +58,7 @@ class CameraTestDialog(QDialog):
         layout.addWidget(self.lbl_status)
         
         # Live Debug Tracker Label
-        self.lbl_debug = QLabel("📊 DEBUG TRACKER: Khung hình: 0 | Thuật toán: Đang khởi tạo...")
+        self.lbl_debug = QLabel("📊 DEBUG TRACKER: Khung hình: 0 | Thuật toán: Đang nhận tín hiệu...")
         self.lbl_debug.setStyleSheet("font-size: 11px; font-family: Consolas, monospace; color: #38bdf8; background-color: #0f172a; padding: 6px; border-radius: 4px;")
         layout.addWidget(self.lbl_debug)
         
@@ -70,23 +72,35 @@ class CameraTestDialog(QDialog):
         btn_layout.addWidget(btn_close)
         layout.addLayout(btn_layout)
 
-    def start_camera(self):
+    def start_camera_test(self):
+        if self.camera_thread and self.camera_thread.isRunning():
+            self.camera_thread.frame_signal.connect(self.on_camera_frame)
+            self.lbl_status.setText(f"🎥 Đang phát trực tiếp từ Camera #{self.camera_index}... Hãy đưa mã QR/Barcode vào!")
+        else:
+            self.start_local_camera()
+
+    def start_local_camera(self):
         try:
             self.cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
-            if not self.cap.isOpened():
+            if not self.cap or not self.cap.isOpened():
                 self.cap = cv2.VideoCapture(self.camera_index)
-            if self.cap.isOpened():
+            if self.cap and self.cap.isOpened():
                 self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
                 self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-                self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
                 self.timer.start(30)
             else:
                 self.lbl_status.setText("❌ KHÔNG THỂ MỞ CAMERA! Vui lòng kiểm tra lại cáp USB.")
                 self.lbl_status.setStyleSheet("font-size: 13px; font-weight: bold; padding: 10px; background-color: #7f1d1d; color: #fca5a5; border-radius: 6px;")
         except Exception as e:
-            logger.error(f"[TEST_CAM] Error opening camera {self.camera_index}: {e}")
+            logger.error(f"[TEST_CAM] Error opening local camera {self.camera_index}: {e}")
             self.lbl_status.setText(f"❌ LỖI CAMERA: {e}")
+
+    @Slot(QImage)
+    def on_camera_frame(self, qimage):
+        pixmap = QPixmap.fromImage(qimage)
+        scaled = pixmap.scaled(self.lbl_video.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.lbl_video.setPixmap(scaled)
 
     def process_frame(self):
         if self.cap and self.cap.isOpened():
@@ -98,20 +112,38 @@ class CameraTestDialog(QDialog):
                 points = None
                 engine_used = ""
 
-                # Stage 1: PyZbar on Original Grayscale
+                # Stage 0: PyZbar on High-Pass Sharpened Image (Fixes Out-of-Focus / Macro Blurry Shots)
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                try:
-                    from pyzbar import pyzbar
-                    barcodes = pyzbar.decode(gray)
-                    if barcodes:
-                        b = barcodes[0]
-                        raw_data = b.data.decode("utf-8", errors="ignore").strip()
-                        barcode_type = b.type
-                        if b.polygon:
-                            points = np.array([(p.x, p.y) for p in b.polygon], np.int32)
-                        engine_used = "PyZbar (Gốc)"
-                except Exception as e:
-                    logger.debug(f"[CAM_TEST_DEBUG] PyZbar raw failed: {e}")
+                if not raw_data:
+                    try:
+                        from pyzbar import pyzbar
+                        kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
+                        sharpened = cv2.filter2D(gray, -1, kernel)
+                        barcodes = pyzbar.decode(sharpened)
+                        if barcodes:
+                            b = barcodes[0]
+                            raw_data = b.data.decode("utf-8", errors="ignore").strip()
+                            barcode_type = b.type
+                            if b.polygon:
+                                points = np.array([(p.x, p.y) for p in b.polygon], np.int32)
+                            engine_used = "PyZbar (Khử Mờ Sắc Nét)"
+                    except Exception:
+                        pass
+
+                # Stage 1: PyZbar on Original Grayscale
+                if not raw_data:
+                    try:
+                        from pyzbar import pyzbar
+                        barcodes = pyzbar.decode(gray)
+                        if barcodes:
+                            b = barcodes[0]
+                            raw_data = b.data.decode("utf-8", errors="ignore").strip()
+                            barcode_type = b.type
+                            if b.polygon:
+                                points = np.array([(p.x, p.y) for p in b.polygon], np.int32)
+                            engine_used = "PyZbar (Gốc)"
+                    except Exception as e:
+                        logger.debug(f"[CAM_TEST_DEBUG] PyZbar raw failed: {e}")
 
                 # Stage 2: PyZbar on CLAHE Contrast Equalization (Fixes Phone Glare)
                 if not raw_data:
@@ -263,13 +295,22 @@ class CameraTestDialog(QDialog):
 
                 # Render video frame to Qt QLabel
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                if not isinstance(rgb_frame, np.ndarray) or rgb_frame.size == 0:
+                    return
+                if not rgb_frame.flags['C_CONTIGUOUS']:
+                    rgb_frame = np.ascontiguousarray(rgb_frame)
                 h, w, ch = rgb_frame.shape
-                q_img = QImage(rgb_frame.data, w, h, ch * w, QImage.Format_RGB888)
+                q_img = QImage(bytes(rgb_frame.data), w, h, ch * w, QImage.Format_RGB888).copy()
                 pixmap = QPixmap.fromImage(q_img)
                 self.lbl_video.setPixmap(pixmap.scaled(self.lbl_video.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
     def closeEvent(self, event):
         self.timer.stop()
+        if hasattr(self, 'camera_thread') and self.camera_thread:
+            try:
+                self.camera_thread.frame_signal.disconnect(self.on_camera_frame)
+            except Exception:
+                pass
         if self.cap and self.cap.isOpened():
             self.cap.release()
         event.accept()
@@ -345,14 +386,16 @@ class AudioWaveformWidget(QWidget):
 
 class MicrophoneTestDialog(QDialog):
     """Interactive Microphone & Vosk Speech Recognition Test Dialog"""
-    def __init__(self, parent=None, mic_name="default"):
+    """Interactive Microphone & Vosk Speech Recognition Test Dialog"""
+    def __init__(self, parent=None, mic_name="default", voice_thread=None):
         super().__init__(parent)
         self.mic_name = mic_name
         self.setWindowTitle(f"🎙️ TEST MICROPHONE & NHẬN DIỆN GIỌNG NÓI ({mic_name})")
         self.resize(700, 560)
         self.setModal(True)
         
-        self.voice_thread = None
+        self.voice_thread = voice_thread
+        self.own_thread = False
         self.init_ui()
         self.start_voice_test()
 
@@ -381,12 +424,20 @@ class MicrophoneTestDialog(QDialog):
         layout.addWidget(gauge_box)
         
         # Speech AI Result Status Badge
-        speech_box = QGroupBox("2. Thử Hô Lệnh Tiếng Việt ('Chụp', 'Xóa', 'Tiếp', 'Xem')")
+        speech_box = QGroupBox("2. Trạng Thái Nạp Thư Viện AI & Nhận Dạng Văn Bản Thô (Raw Voice Text)")
         speech_layout = QVBoxLayout(speech_box)
         
-        self.lbl_recognized = QLabel("🎙️ Hãy nói thử các lệnh: 'CHỤP', 'XÓA', 'TIẾP', 'XEM' trước microphone...")
+        self.lbl_lib_status = QLabel("✅ [100% PURE WHISPER AI SMALL]: OpenAI Whisper AI Small (~480MB - Độ Chính Xác Cao Nhất) ĐÃ SẴN SÀNG!")
+        self.lbl_lib_status.setStyleSheet("font-size: 11px; font-weight: bold; padding: 6px; background-color: #0f172a; color: #38bdf8; border-radius: 4px;")
+        speech_layout.addWidget(self.lbl_lib_status)
+
+        self.lbl_raw_text = QLabel("💬 [2. Văn bản nhận dạng thô (Raw Text)]: (Đang lắng nghe âm thanh...)")
+        self.lbl_raw_text.setStyleSheet("font-size: 12px; font-weight: bold; padding: 8px; background-color: #1e293b; color: #fde047; border-radius: 4px;")
+        speech_layout.addWidget(self.lbl_raw_text)
+
+        self.lbl_recognized = QLabel("🎙️ [3. Khớp lệnh lâm sàng]: Hãy nói thử: 'CHỤP', 'XÓA', 'TIẾP', 'XEM'")
         self.lbl_recognized.setAlignment(Qt.AlignCenter)
-        self.lbl_recognized.setStyleSheet("font-size: 13px; font-weight: bold; padding: 12px; background-color: #1e293b; color: #cbd5e1; border-radius: 6px;")
+        self.lbl_recognized.setStyleSheet("font-size: 13px; font-weight: bold; padding: 10px; background-color: #1e293b; color: #cbd5e1; border-radius: 6px;")
         speech_layout.addWidget(self.lbl_recognized)
         
         # Live Real-time Acoustic Log Console
@@ -395,30 +446,74 @@ class MicrophoneTestDialog(QDialog):
         speech_layout.addWidget(lbl_log_hdr)
         
         self.list_logs = QListWidget()
-        self.list_logs.setFixedHeight(130)
+        self.list_logs.setFixedHeight(120)
         self.list_logs.setStyleSheet("background-color: #0f172a; border: 1px solid #334155; font-size: 11px; color: #38bdf8; border-radius: 6px;")
         speech_layout.addWidget(self.list_logs)
         
         layout.addWidget(speech_box)
         
-        # Close Button
+        # Buttons Layout
+        btn_record = QPushButton("🎙️ Ghi Âm Mẫu Giọng Nói Chẩn Đoán (3s)")
+        btn_record.setStyleSheet("padding: 8px 16px; font-size: 13px; font-weight: bold; background-color: #0284c7; color: white; border-radius: 6px;")
+        btn_record.clicked.connect(self.record_diagnostic_sample)
+
         btn_close = QPushButton("Đóng Cửa Sổ Test")
         btn_close.setStyleSheet("padding: 8px 20px; font-size: 13px; background-color: #475569; color: white; border-radius: 6px;")
         btn_close.clicked.connect(self.accept)
         
         btn_layout = QHBoxLayout()
+        btn_layout.addWidget(btn_record)
         btn_layout.addStretch()
         btn_layout.addWidget(btn_close)
         layout.addLayout(btn_layout)
 
+    def record_diagnostic_sample(self):
+        import wave, wave, struct
+        from pathlib import Path
+        try:
+            sample_file = Path("scratch/voice_sample.wav")
+            sample_file.parent.mkdir(parents=True, exist_ok=True)
+            self.lbl_raw_text.setText("🔴 DANG GHI AM MAU GIỌNG NÓI (3 GIÂY)... HÃY HÔ 'CHỤP' HOẶC 'TIẾP'...")
+            self.lbl_raw_text.setStyleSheet("font-size: 12px; font-weight: bold; padding: 8px; background-color: #991b1b; color: #fef08a; border-radius: 4px;")
+            
+            # Simple PyAudio record 3 seconds
+            import pyaudio
+            pa = pyaudio.PyAudio()
+            stream = pa.open(format=pyaudio.paInt16, channels=1, rate=16000, input=True, frames_per_buffer=1024)
+            frames = []
+            for _ in range(0, int(16000 / 1024 * 3)):
+                data = stream.read(1024, exception_on_overflow=False)
+                frames.append(data)
+            stream.stop_stream()
+            stream.close()
+            pa.terminate()
+
+            with wave.open(str(sample_file), 'wb') as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(16000)
+                wf.writeframes(b''.join(frames))
+
+            self.lbl_raw_text.setText(f"✅ ĐÃ GHI XONG FILE MẪU CHẨN ĐOÁN: '{sample_file.name}'!")
+            self.lbl_raw_text.setStyleSheet("font-size: 12px; font-weight: bold; padding: 8px; background-color: #065f46; color: #6ee7b7; border-radius: 4px;")
+            self.on_voice_log(f"🎙️ [GHI ÂM MẪU CHẨN ĐOÁN]: Đã lưu mẫu âm thanh 3 giây vào '{sample_file.absolute()}'")
+        except Exception as e:
+            self.lbl_raw_text.setText(f"❌ Lỗi ghi âm mẫu: {e}")
+
     def start_voice_test(self):
         try:
-            self.voice_thread = voice_detector.VoiceDetectorThread(mic_name=self.mic_name)
+            if self.voice_thread is None:
+                self.voice_thread = voice_detector.VoiceDetectorThread(mic_name=self.mic_name)
+                self.own_thread = True
+                self.voice_thread.start()
+            
             self.voice_thread.volume_signal.connect(self.on_volume_update)
             self.voice_thread.log_signal.connect(self.on_voice_log)
             self.voice_thread.keyword_signal.connect(self.on_keyword_detected)
             self.voice_thread.error_signal.connect(self.on_voice_error)
-            self.voice_thread.start()
+            
+            if hasattr(self.voice_thread, 'lib_status_msg') and self.voice_thread.lib_status_msg:
+                self.lbl_lib_status.setText(self.voice_thread.lib_status_msg)
             self.on_voice_log(f"🔊 Luồng ghi âm Microphone ({self.mic_name}) đã kích hoạt thành công.")
         except Exception as e:
             logger.error(f"[TEST_MIC] Error starting voice thread: {e}")
@@ -431,23 +526,38 @@ class MicrophoneTestDialog(QDialog):
 
     @Slot(str)
     def on_voice_log(self, msg):
-        t_str = time.strftime("%H:%M:%S")
-        item = QListWidgetItem(f"[{t_str}] {msg}")
-        if "ĐÃ KHỚP LỆNH" in msg:
-            item.setForeground(QColor("#6ee7b7"))
-        elif "LỜI NÓI THỜI GIAN THẬT" in msg:
-            item.setForeground(QColor("#fde047"))
-        else:
-            item.setForeground(QColor("#38bdf8"))
-        self.list_logs.addItem(item)
-        self.list_logs.scrollToBottom()
+        try:
+            if "🤖 [OpenAI Whisper" in msg or "💬 [" in msg or "🎙️ [" in msg:
+                self.lbl_raw_text.setText(f"💬 Văn bản thô (Raw Text): {msg}")
+                self.lbl_recognized.setText(msg)
+                return
+
+            if "PURE WHISPER" in msg or "[MÔ HÌNH" in msg or "[THƯ VIỆN]" in msg:
+                self.lbl_lib_status.setText(msg)
+                return
+
+            t_str = time.strftime("%H:%M:%S")
+            item = QListWidgetItem(f"[{t_str}] {msg}")
+            if "ĐÃ KHỚP LỆNH" in msg:
+                item.setForeground(QColor("#6ee7b7"))
+            elif "Lời nói" in msg:
+                item.setForeground(QColor("#fde047"))
+            else:
+                item.setForeground(QColor("#38bdf8"))
+            
+            self.list_logs.addItem(item)
+            if self.list_logs.count() > 50:
+                self.list_logs.takeItem(0)
+            self.list_logs.scrollToBottom()
+        except Exception:
+            pass
 
     @Slot(str)
     def on_keyword_detected(self, kw):
         kw_upper = kw.upper()
         try:
-            import winsound
-            winsound.Beep(1500, 120)
+            from PySide6.QtWidgets import QApplication
+            QApplication.beep()
         except Exception:
             pass
         self.lbl_recognized.setText(f"✅ ĐÃ NHẬN LỆNH THÀNH CÔNG: \"{kw_upper}\" - TRẠNG THÁI: TỐT (OK)")
@@ -458,10 +568,49 @@ class MicrophoneTestDialog(QDialog):
         self.lbl_recognized.setText(f"❌ Lỗi Microphone: {err}")
         self.lbl_recognized.setStyleSheet("font-size: 13px; font-weight: bold; padding: 12px; background-color: #7f1d1d; color: #fca5a5; border-radius: 6px;")
 
+    def cleanup_test(self):
+        if hasattr(self, 'waveform_widget') and self.waveform_widget:
+            try:
+                self.waveform_widget.anim_timer.stop()
+            except Exception:
+                pass
+
+        if hasattr(self, 'voice_thread') and self.voice_thread:
+            try:
+                self.voice_thread.volume_signal.disconnect(self.on_volume_update)
+            except Exception:
+                pass
+            try:
+                self.voice_thread.log_signal.disconnect(self.on_voice_log)
+            except Exception:
+                pass
+            try:
+                self.voice_thread.keyword_signal.disconnect(self.on_keyword_detected)
+            except Exception:
+                pass
+            try:
+                self.voice_thread.error_signal.disconnect(self.on_voice_error)
+            except Exception:
+                pass
+
+            if getattr(self, 'own_thread', False):
+                try:
+                    self.voice_thread.stop()
+                except Exception:
+                    pass
+            self.voice_thread = None
+
     def closeEvent(self, event):
-        if self.voice_thread:
-            self.voice_thread.stop()
+        self.cleanup_test()
         event.accept()
+
+    def accept(self):
+        self.cleanup_test()
+        super().accept()
+
+    def reject(self):
+        self.cleanup_test()
+        super().reject()
 
 
 class PedalTestDialog(QDialog):
@@ -713,12 +862,12 @@ class ImagePreviewDialog(QDialog):
 
 
 # Launcher Helper Functions
-def test_camera(parent=None, camera_index=0):
-    dlg = CameraTestDialog(parent, camera_index=camera_index)
+def test_camera(parent=None, camera_index=0, camera_thread=None):
+    dlg = CameraTestDialog(parent, camera_index=camera_index, camera_thread=camera_thread)
     dlg.exec()
 
-def test_microphone(parent=None, mic_name="default"):
-    dlg = MicrophoneTestDialog(parent, mic_name=mic_name)
+def test_microphone(parent=None, mic_name="default", voice_thread=None):
+    dlg = MicrophoneTestDialog(parent, mic_name=mic_name, voice_thread=voice_thread)
     dlg.exec()
 
 def test_pedal(parent=None, trigger_key="ALT"):

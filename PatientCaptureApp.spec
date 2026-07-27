@@ -5,15 +5,10 @@ from pathlib import Path
 
 block_cipher = None
 
-# Base path to Vosk model
-appdata_vosk = os.path.join(os.getenv('APPDATA'), 'PatientCaptureApp', 'vosk-model-small-vn-0.4')
 datas = []
 
 if os.path.exists('config.json'):
     datas.append(('config.json', '.'))
-
-if os.path.exists(appdata_vosk):
-    datas.append((appdata_vosk, 'vosk-model-small-vn-0.4'))
 
 a = Analysis(
     ['main.py'],
@@ -26,7 +21,8 @@ a = Analysis(
         'PySide6.QtGui',
         'cv2',
         'pyaudio',
-        'vosk',
+        'faster_whisper',
+        'ctranslate2',
         'keyboard',
         'sqlite3',
         'winsound',

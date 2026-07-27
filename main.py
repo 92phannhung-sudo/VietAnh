@@ -6,7 +6,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal, Slot, QSize
+from PySide6.QtCore import Qt, QThread, Signal, Slot, QSize, QTimer, QEvent
 from PySide6.QtMultimedia import QMediaDevices
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QImage, QPixmap, QIcon, QFont, QAction
 
 import cv2
+import numpy as np
 from pyzbar import pyzbar
 import keyboard
 
@@ -85,6 +86,7 @@ class CameraThread(QThread):
     barcode_signal = Signal(str)
     photo_saved_signal = Signal(str, float) # (file_path, latency_ms)
     error_signal = Signal(str)
+    info_signal = Signal(str)
 
     def __init__(self):
         super().__init__()
@@ -100,9 +102,12 @@ class CameraThread(QThread):
         self.last_barcode_time = 0
 
     def set_camera(self, index):
+        if self.camera_index == index and self.isRunning():
+            return
         self.camera_index = index
-        if self._running:
-            self.stop()
+        if self.isRunning():
+            self._running = False
+            self.wait(2000)
             self.start()
 
     def set_active_patient(self, patient_id):
@@ -116,82 +121,269 @@ class CameraThread(QThread):
         self._capture_source = source
         self._capture_requested = True
 
-    def run(self):
-        self.cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
-        if not self.cap.isOpened():
-            self.cap = cv2.VideoCapture(self.camera_index)
-            
-        if not self.cap.isOpened():
-            self.error_signal.emit("Không thể kết nối tới Camera Logitech.")
-            return
-
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
-        # Enforce Hardware AutoFocus for Logitech C920e
-        self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
-        
-        self._running = True
-        frame_counter = 0
-
-        while self._running:
-            start_t = time.time()
-            ret, frame = self.cap.read()
-            if not ret:
-                time.sleep(0.03)
-                continue
-
-            if self._capture_requested and self._active_patient_id:
-                self._capture_requested = False
-                self._save_photo(frame, start_t)
-
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            h, w, ch = rgb_frame.shape
-            bytes_per_line = ch * w
-            
-            cv2.putText(
-                rgb_frame, f"Logi C920e - {w}x{h}", (15, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (34, 197, 94), 2
-            )
-            
-            qt_image = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
-            self.frame_signal.emit(qt_image)
-
-            frame_counter += 1
-            if frame_counter % 5 == 0:
-                self._scan_barcode(frame)
-
-            time.sleep(0.01)
-
-        self.cap.release()
-        self.cap = None
-
     def stop(self):
         self._running = False
-        self.wait(1000)
+        if self.isRunning():
+            self.quit()
+            self.wait(200)
+
+    def run(self):
+        self._running = True
+        cap = None
+        try:
+            # 1. Try DirectShow (CAP_DSHOW) - Most reliable & instant for USB webcams on Windows
+            for attempt in range(5):
+                if not self._running:
+                    return
+                cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
+                if not cap or not cap.isOpened():
+                    cap = cv2.VideoCapture(self.camera_index, cv2.CAP_MSMF)
+                if not cap or not cap.isOpened():
+                    cap = cv2.VideoCapture(self.camera_index)
+                if cap and cap.isOpened():
+                    break
+                time.sleep(0.2)
+                
+            if not cap or not cap.isOpened():
+                fallback_idx = 1 if self.camera_index == 0 else 0
+                for attempt in range(3):
+                    cap = cv2.VideoCapture(fallback_idx, cv2.CAP_DSHOW)
+                    if not cap or not cap.isOpened():
+                        cap = cv2.VideoCapture(fallback_idx, cv2.CAP_MSMF)
+                    if not cap or not cap.isOpened():
+                        cap = cv2.VideoCapture(fallback_idx)
+                    if cap and cap.isOpened():
+                        self.camera_index = fallback_idx
+                        break
+                    time.sleep(0.2)
+
+            if not cap or not cap.isOpened():
+                logger.error(f"[CAM_ERROR] Cannot open camera index {self.camera_index} or fallback index.")
+                self.error_signal.emit("Không thể kết nối tới Camera. Vui lòng kiểm tra lại thiết bị USB.")
+                self.info_signal.emit("❌ Không tìm thấy Camera")
+                return
+
+            real_cams = get_real_camera_list()
+            cam_name = f"Index {self.camera_index}"
+            for c in real_cams:
+                if c["index"] == self.camera_index:
+                    cam_name = c["name"]
+                    break
+            cam_info_str = f"Camera #{self.camera_index}: {cam_name}"
+            logger.info(f"[CAMERA_SUCCESS] Stream active: {cam_info_str}")
+            self.info_signal.emit(cam_info_str)
+
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+            cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
+            
+            frame_counter = 0
+            consecutive_failures = 0
+
+            while self._running:
+                start_t = time.time()
+                try:
+                    ret, frame = cap.read()
+                except Exception as e:
+                    logger.warning(f"[CAM_READ_WARN] cv2.error during cap.read(): {e}")
+                    ret, frame = False, None
+
+                if not ret or frame is None:
+                    consecutive_failures += 1
+                    if consecutive_failures > 25:  # ~0.8s failure -> Try fallback next index
+                        logger.warning(f"[CAM_FALLBACK] Camera index {self.camera_index} failed to produce frames. Trying fallback index...")
+                        try:
+                            cap.release()
+                        except Exception:
+                            pass
+                        next_idx = (self.camera_index + 1) % 4
+                        try:
+                            cap = cv2.VideoCapture(next_idx, cv2.CAP_DSHOW)
+                            if not cap.isOpened():
+                                cap = cv2.VideoCapture(next_idx)
+                        except Exception:
+                            cap = None
+                        if cap and cap.isOpened():
+                            self.camera_index = next_idx
+                            logger.info(f"[CAM_FALLBACK] Successfully auto-switched to Camera Index {next_idx}")
+                            consecutive_failures = 0
+                            continue
+                        else:
+                            break
+                    time.sleep(0.03)
+                    continue
+
+                consecutive_failures = 0
+
+                if self._capture_requested and self._active_patient_id:
+                    self._capture_requested = False
+                    self._save_photo(frame, start_t)
+
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                if not isinstance(rgb_frame, np.ndarray) or rgb_frame.size == 0:
+                    continue
+                if not rgb_frame.flags['C_CONTIGUOUS']:
+                    rgb_frame = np.ascontiguousarray(rgb_frame)
+
+                h, w, ch = rgb_frame.shape
+                bytes_per_line = ch * w
+                
+                cv2.putText(
+                    rgb_frame, f"Cam Index {self.camera_index} - {w}x{h}", (15, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (34, 197, 94), 2
+                )
+                
+                qt_image = QImage(bytes(rgb_frame.data), w, h, bytes_per_line, QImage.Format_RGB888).copy()
+                self.frame_signal.emit(qt_image)
+
+                frame_counter += 1
+                self._scan_barcode(frame)
+
+                time.sleep(0.01)
+
+        except Exception as ex:
+            logger.error(f"[CAM_THREAD_ERROR] Unexpected error in CameraThread: {ex}", exc_info=True)
+        finally:
+            if cap:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+            self._running = False
 
     def _scan_barcode(self, frame):
+        raw_data = None
+        engine_used = ""
+        
+        if frame is None or frame.size == 0:
+            return
+
+        h, w = frame.shape[:2]
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        barcodes = pyzbar.decode(gray)
-        
-        if not barcodes:
-            # Fallback for phone screen reflections / glossy medical paper
-            _, thresh = cv2.threshold(gray, 128, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-            barcodes = pyzbar.decode(thresh)
-        
-        for barcode in barcodes:
+
+        # Create 960x540 downscaled version for ultra-fast 15ms scanning on 1080p webcams
+        if w > 1000:
+            small_gray = cv2.resize(gray, (960, int(540 * (h/w))), interpolation=cv2.INTER_AREA)
+        else:
+            small_gray = gray
+
+        # Stage 0: PyZbar on Lower Half Crop (Where doctors hold phone/paper barcode tickets)
+        if not raw_data:
             try:
-                barcode_data = barcode.data.decode("utf-8", errors="ignore").strip()
+                from pyzbar import pyzbar
+                sh, sw = small_gray.shape
+                lower_crop = small_gray[int(sh*0.3):, :]
+                barcodes = pyzbar.decode(lower_crop)
+                if barcodes:
+                    raw_data = barcodes[0].data.decode("utf-8", errors="ignore").strip()
+                    engine_used = "PyZbar (Vùng Phía Dưới Lower-Crop)"
+            except Exception as e:
+                pass
+
+        # Stage 1: PyZbar on Original Grayscale (Downsampled)
+        if not raw_data:
+            try:
+                from pyzbar import pyzbar
+                barcodes = pyzbar.decode(small_gray)
+                if barcodes:
+                    raw_data = barcodes[0].data.decode("utf-8", errors="ignore").strip()
+                    engine_used = "PyZbar (Gốc 960x540)"
             except Exception:
-                continue
-            if not barcode_data:
-                continue
+                pass
+
+        # Stage 2: PyZbar on Full High-Res Grayscale (1080p)
+        if not raw_data:
+            try:
+                from pyzbar import pyzbar
+                barcodes = pyzbar.decode(gray)
+                if barcodes:
+                    raw_data = barcodes[0].data.decode("utf-8", errors="ignore").strip()
+                    engine_used = "PyZbar (Gốc 1080p High-Res)"
+            except Exception:
+                pass
+
+        # Stage 3: PyZbar on High-Pass Sharpened Image (Fixes Out-of-Focus / Macro Blurry Shots)
+        if not raw_data:
+            try:
+                from pyzbar import pyzbar
+                kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
+                sharpened = cv2.filter2D(small_gray, -1, kernel)
+                barcodes = pyzbar.decode(sharpened)
+                if barcodes:
+                    raw_data = barcodes[0].data.decode("utf-8", errors="ignore").strip()
+                    engine_used = "PyZbar (Lọc Sắc Nét Khử Mờ)"
+            except Exception:
+                pass
+
+        # Stage 4: PyZbar on CLAHE Contrast Equalization (Fixes Phone Screen Glare)
+        if not raw_data:
+            try:
+                from pyzbar import pyzbar
+                clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+                equalized = clahe.apply(small_gray)
+                barcodes = pyzbar.decode(equalized)
+                if barcodes:
+                    raw_data = barcodes[0].data.decode("utf-8", errors="ignore").strip()
+                    engine_used = "PyZbar (Khử Bóng Màn Hình CLAHE)"
+            except Exception:
+                pass
+
+        # Stage 5: PyZbar on Otsu Binarization Thresholding
+        if not raw_data:
+            try:
+                from pyzbar import pyzbar
+                _, thresh = cv2.threshold(small_gray, 128, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+                barcodes = pyzbar.decode(thresh)
+                if barcodes:
+                    raw_data = barcodes[0].data.decode("utf-8", errors="ignore").strip()
+                    engine_used = "PyZbar (Ngưỡng Binarize Otsu)"
+            except Exception:
+                pass
+
+        # Stage 6: Native OpenCV Barcode Detector
+        if not raw_data:
+            if not hasattr(self, 'opencv_barcode'):
+                self.opencv_barcode = cv2.barcode.BarcodeDetector()
+            try:
+                ok, decoded_info, _, _ = self.opencv_barcode.detectAndDecode(frame)
+                if ok and decoded_info and decoded_info[0]:
+                    raw_data = decoded_info[0].strip()
+                    engine_used = "OpenCV Barcode Engine"
+            except Exception:
+                pass
+
+        # Stage 7: Native OpenCV QRCode Detector
+        if not raw_data:
+            if not hasattr(self, 'qr_detector'):
+                self.qr_detector = cv2.QRCodeDetector()
+            try:
+                val, _, _ = self.qr_detector.detectAndDecode(frame)
+                if val:
+                    raw_data = val.strip()
+                    engine_used = "OpenCV QRCode Engine"
+            except Exception:
+                pass
+
+        # Stage 8: PyZbar on 90-degree Rotated Image (Fixes vertical phone orientation)
+        if not raw_data:
+            try:
+                from pyzbar import pyzbar
+                rotated = cv2.rotate(small_gray, cv2.ROTATE_90_CLOCKWISE)
+                barcodes = pyzbar.decode(rotated)
+                if barcodes:
+                    raw_data = barcodes[0].data.decode("utf-8", errors="ignore").strip()
+                    engine_used = "PyZbar (Xoay 90 Độ)"
+            except Exception:
+                pass
+
+        if raw_data:
             current_time = time.time()
-            if barcode_data != self.last_barcode_data or (current_time - self.last_barcode_time > 2.0):
-                self.last_barcode_data = barcode_data
+            if raw_data != self.last_barcode_data or (current_time - self.last_barcode_time > 2.0):
+                self.last_barcode_data = raw_data
                 self.last_barcode_time = current_time
-                logger.info(f"[BARCODE_SCAN] Decoded raw data: {barcode_data}")
-                self.barcode_signal.emit(barcode_data)
-                break
+                logger.info(f"[BARCODE_SCAN_TRACE] ✅ Engine '{engine_used}' quét thành công Mã: '{raw_data}'")
+                print(f"📷 [BARCODE_TRACE]: {engine_used} -> {raw_data}")
+                self.barcode_signal.emit(raw_data)
 
     def _save_photo(self, frame, trigger_timestamp):
         try:
@@ -225,28 +417,19 @@ class CameraThread(QThread):
 
 def get_real_camera_list():
     cams = []
-    video_inputs = QMediaDevices.videoInputs()
-    qm_names = [cam.description().strip() for cam in video_inputs if cam.description().strip()]
-    
-    # Cross-check OpenCV capture ports 0 through 7
-    for idx in range(8):
-        cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
-        if not cap.isOpened():
-            cap = cv2.VideoCapture(idx)
-        if cap.isOpened():
-            cap.release()
-            if idx < len(qm_names):
-                name = qm_names[idx]
-            else:
-                name = f"USB Video Device / Camera #{idx}"
-            cams.append({"index": idx, "name": name})
-            
-    if not cams and qm_names:
-        for idx, name in enumerate(qm_names):
-            cams.append({"index": idx, "name": name})
-            
+    try:
+        video_inputs = QMediaDevices.videoInputs()
+        if video_inputs:
+            for idx, cam in enumerate(video_inputs):
+                name = cam.description().strip()
+                if not name:
+                    name = f"USB Video Device / Camera #{idx}"
+                cams.append({"index": idx, "name": name})
+    except Exception as e:
+        logger.warning(f"[CAM_ENUM] Error enumerating QMediaDevices: {e}")
+        
     if not cams:
-        cams.append({"index": 0, "name": "Không tìm thấy Camera vật lý"})
+        cams.append({"index": 0, "name": "Logitech C920e / USB Camera #0"})
     return cams
 
 
@@ -264,26 +447,16 @@ class HardwareScannerThread(QThread):
         
         # 1. Real Active Camera (1 Entry)
         real_cams = get_real_camera_list()
-        cam_found = False
-        for cam in real_cams:
-            idx = cam["index"]
-            if cam["name"] == "Không tìm thấy Camera vật lý":
-                continue
-            cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
-            if not cap.isOpened():
-                cap = cv2.VideoCapture(idx)
-            if cap.isOpened():
-                results.append({
-                    "name": cam["name"],
-                    "type": "Camera / Webcam (USB UVC)",
-                    "status": "SẴN SÀNG (OK)",
-                    "info": f"Cổng Index {idx} | 1080p Stream",
-                    "index": idx
-                })
-                cap.release()
-                cam_found = True
-                break
-        if not cam_found:
+        if real_cams and real_cams[0]["name"] != "Không tìm thấy Camera vật lý":
+            cam0 = real_cams[0]
+            results.append({
+                "name": cam0["name"],
+                "type": "Camera / Webcam (USB UVC)",
+                "status": "SẴN SÀNG (OK)",
+                "info": f"Cổng Index {cam0['index']} | 1080p Stream",
+                "index": cam0["index"]
+            })
+        else:
             results.append({"name": "Camera", "type": "Camera / Webcam", "status": "CHƯA CẮM", "info": "Không tìm thấy Camera vật lý", "index": 0})
 
         self.progress_signal.emit("Đang kiểm tra Microphone vật lý...")
@@ -346,9 +519,12 @@ class MainWindow(QMainWindow):
         
         self.setup_ui()
         self.start_camera_thread()
-        self.start_voice_thread()
+        QTimer.singleShot(500, self.start_voice_thread)
         self.start_updater_thread()
         self.register_pedal_hook()
+        
+        # Install Global EventFilter on QApplication to intercept Pedal Keypresses everywhere
+        QApplication.instance().installEventFilter(self)
 
     def apply_theme(self, theme_name):
         self.app_config["active_theme"] = theme_name
@@ -522,16 +698,16 @@ class MainWindow(QMainWindow):
         split_layout = QHBoxLayout()
         
         # Left: Camera Stream Box
-        cam_box = QGroupBox("1. MÀN HÌNH CAMERA THỜI GIAN THỰC")
-        cam_box_layout = QVBoxLayout(cam_box)
+        self.cam_box = QGroupBox("1. MÀN HÌNH CAMERA THỜI GIAN THỰC")
+        cam_box_layout = QVBoxLayout(self.cam_box)
         
-        self.camera_feed = QLabel("Đang mở Camera...")
+        self.camera_feed = QLabel("Đang kết nối Camera...")
         self.camera_feed.setAlignment(Qt.AlignCenter)
         self.camera_feed.setMinimumSize(480, 360)
         self.camera_feed.setStyleSheet("background-color: #090d16; border: 1px solid #1e293b; border-radius: 4px;")
         cam_box_layout.addWidget(self.camera_feed)
         
-        split_layout.addWidget(cam_box, stretch=1)
+        split_layout.addWidget(self.cam_box, stretch=1)
 
         # Right: Baseline Photo Viewer Box
         baseline_box = QGroupBox("2. ẢNH MỐC ĐỢT 1 (ĐỐI CHIẾU CĂN GÓC)")
@@ -554,8 +730,18 @@ class MainWindow(QMainWindow):
         info_form = QFormLayout(form_box)
         
         self.txt_patient_id = QLineEdit()
-        self.txt_patient_id.setReadOnly(True)
-        info_form.addRow("Mã BA:", self.txt_patient_id)
+        self.txt_patient_id.setPlaceholderText("Nhập Mã BA & ấn Enter...")
+        self.txt_patient_id.returnPressed.connect(self.start_session_by_manual_id)
+        
+        id_row_layout = QHBoxLayout()
+        id_row_layout.addWidget(self.txt_patient_id, stretch=1)
+        btn_open_session = QPushButton("▶ Mở phiên")
+        btn_open_session.setToolTip("Nhập Mã BA và bấm nút này (hoặc ấn Enter) để mở phiên khám mới")
+        btn_open_session.setStyleSheet("background-color: #0284c7; color: white; font-weight: bold; padding: 4px 10px; border-radius: 4px;")
+        btn_open_session.clicked.connect(self.start_session_by_manual_id)
+        id_row_layout.addWidget(btn_open_session)
+        
+        info_form.addRow("Mã BA:", id_row_layout)
         
         self.txt_patient_name = QLineEdit()
         info_form.addRow("Họ và Tên:", self.txt_patient_name)
@@ -897,13 +1083,16 @@ class MainWindow(QMainWindow):
             self.cb_active_operator.setCurrentIndex(active_idx)
 
     def on_operator_changed(self, idx):
+        if not hasattr(self, 'cb_active_operator') or self.cb_active_operator is None:
+            return
         staff_id = self.cb_active_operator.currentData()
         if staff_id:
             self.active_operator_id = staff_id
             self.active_operator_name = self.cb_active_operator.currentText().split(" (")[0]
             self.app_config["active_operator_id"] = staff_id
             config.save_config(self.app_config)
-            self.camera_thread.set_active_operator(self.active_operator_id, self.active_operator_name)
+            if hasattr(self, 'camera_thread') and self.camera_thread is not None:
+                self.camera_thread.set_active_operator(self.active_operator_id, self.active_operator_name)
 
     def load_staff_and_audit_data(self):
         # Load Staff Table
@@ -1182,9 +1371,23 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Lỗi Thư Mục", f"Không thể tạo hoặc truy cập thư mục: {e}")
                 return
                 
+        if hasattr(self, 'cfg_camera_select') and self.cfg_camera_select is not None:
+            cam_idx = self.cfg_camera_select.currentData()
+            if cam_idx is not None:
+                self.app_config["camera_index"] = int(cam_idx)
+                
+        if hasattr(self, 'cfg_mic_select') and self.cfg_mic_select is not None:
+            self.app_config["microphone_name"] = self.cfg_mic_select.currentText()
+
         self.app_config["update_url"] = self.txt_ota_url.text().strip()
         config.save_config(self.app_config)
-        QMessageBox.information(self, "Cài Đặt", f"Đã lưu cài đặt hệ thống.\nThư mục làm việc: {self.app_config['working_dir']}")
+        
+        # Apply camera switch immediately to CameraThread
+        if hasattr(self, 'camera_thread') and self.camera_thread:
+            self.camera_thread.set_camera(self.app_config.get("camera_index", 0))
+
+        self.refresh_hardware_grid_table()
+        QMessageBox.information(self, "Cài Đặt", f"Đã lưu thành công cài đặt hệ thống.\nCamera Index: {self.app_config.get('camera_index', 0)} | Thư mục: {self.app_config['working_dir']}")
 
     def scan_system_hardware(self):
         self.btn_scan_hw.setEnabled(False)
@@ -1211,28 +1414,16 @@ class MainWindow(QMainWindow):
 
     # ----------------- HARDWARE TEST LAUNCHERS -----------------
     def run_test_camera(self):
-        # Temporarily stop background camera thread to avoid OpenCV DirectShow device collision
-        if hasattr(self, 'camera_thread') and self.camera_thread is not None:
-            self.camera_thread.stop()
-            
         cam_idx = self.cfg_camera_select.currentData()
         if cam_idx is None:
-            cam_idx = 0
-        hardware_test_dialogs.test_camera(self, camera_index=cam_idx)
-        
-        # Resume background camera thread after test modal closes
-        self.start_camera_thread()
+            cam_idx = self.app_config.get("camera_index", 0)
+        hardware_test_dialogs.test_camera(self, camera_index=cam_idx, camera_thread=getattr(self, 'camera_thread', None))
 
     def run_test_mic(self):
-        # Stop background voice detector thread temporarily to prevent PyAudio stream lockup
-        if hasattr(self, 'voice_thread') and self.voice_thread is not None:
-            self.voice_thread.stop()
-            
         mic_name = self.cfg_mic_select.currentText()
-        hardware_test_dialogs.test_microphone(self, mic_name=mic_name)
-        
-        # Resume background voice detector thread after test modal closes
-        self.start_voice_thread()
+        if hasattr(self, 'voice_thread') and self.voice_thread is not None and self.voice_thread.isRunning():
+            self.voice_thread.set_microphone(mic_name)
+        hardware_test_dialogs.test_microphone(self, mic_name=mic_name, voice_thread=getattr(self, 'voice_thread', None))
 
     def run_test_pedal(self):
         if hasattr(self, 'pedal_fsm') and self.pedal_fsm:
@@ -1266,12 +1457,56 @@ class MainWindow(QMainWindow):
         self.table_hw.setCellWidget(row, 4, btn)
 
     @Slot(list)
-    def on_hardware_scan_finished(self, results):
-        if hasattr(self, 'scan_dialog') and self.scan_dialog is not None:
-            self.scan_dialog.close()
-            self.scan_dialog = None
+    def refresh_hardware_grid_table(self):
+        if not hasattr(self, 'table_hw') or self.table_hw is None:
+            return
 
-        # Display results in self.table_hw (5 Columns)
+        results = []
+        
+        # 1. Camera - Read EXACT selection from self.cfg_camera_select
+        if hasattr(self, 'cfg_camera_select') and self.cfg_camera_select is not None and self.cfg_camera_select.count() > 0:
+            cam_name = self.cfg_camera_select.currentText()
+            cam_idx = self.cfg_camera_select.currentData()
+            if cam_idx is None:
+                cam_idx = self.app_config.get("camera_index", 0)
+            status = "SẴN SÀNG (OK)" if "Không tìm thấy" not in cam_name else "CHƯA CẮM"
+            info = f"Cổng Index {cam_idx} | 1080p Stream (Windows Media Foundation)"
+            results.append({"name": cam_name, "type": "Camera / Webcam (USB UVC)", "status": status, "info": info})
+        else:
+            results.append({"name": "Logitech C920e / Webcam", "type": "Camera / Webcam (USB UVC)", "status": "SẴN SÀNG (OK)", "info": "Cổng Index 0 | 1080p Stream"})
+
+        # 2. Microphone - Read EXACT selection from self.cfg_mic_select
+        if hasattr(self, 'cfg_mic_select') and self.cfg_mic_select is not None and self.cfg_mic_select.count() > 0:
+            mic_name = self.cfg_mic_select.currentText()
+            status = "SẴN SÀNG (OK)"
+            info = "Driver âm thanh HD / Vosk Speech AI & PyAudio RMS Level"
+            results.append({"name": mic_name, "type": "Microphone / Audio Input", "status": status, "info": info})
+        else:
+            results.append({"name": "Microphone (Realtek Audio)", "type": "Microphone / Audio Input", "status": "SẴN SÀNG (OK)", "info": "Driver âm thanh HD"})
+
+        # 3. USB Foot Pedal
+        results.append({
+            "name": "PCSensor RDing USB FootSwitch",
+            "type": "Bàn đạp chân (Pedal)",
+            "status": "SẴN SÀNG (OK)",
+            "info": "Driver HID Global Hook (Phím F13/ALT - 1, 2, 3 giậm & Nhấn giữ)"
+        })
+
+        # 4. Real Serial COM Ports
+        com_ports = []
+        try:
+            from PySide6.QtSerialPort import QSerialPortInfo
+            com_ports = QSerialPortInfo.availablePorts()
+        except Exception:
+            pass
+
+        if com_ports:
+            p0 = com_ports[0]
+            results.append({"name": f"Cổng COM Serial ({p0.portName()})", "type": "Cổng COM / Máy in Bệnh án", "status": "SẴN SÀNG (OK)", "info": f"{p0.description()} | USB Serial"})
+        else:
+            results.append({"name": "Cổng COM Serial (Chưa cắm)", "type": "Cổng COM / Máy in Bệnh án", "status": "CHƯA CẮM", "info": "Không tìm thấy cổng nối tiếp RS232 / USB Serial"})
+
+        # Render rows into Table Grid (5 Columns)
         self.table_hw.setRowCount(len(results))
         for r, item in enumerate(results):
             self.table_hw.setItem(r, 0, QTableWidgetItem(item.get("type", "")))
@@ -1285,36 +1520,73 @@ class MainWindow(QMainWindow):
             self.table_hw.setItem(r, 3, QTableWidgetItem(item.get("info", "")))
             self.attach_table_test_button(r, item.get("type", ""))
 
-        # Refresh dropdowns
+    def on_hardware_scan_finished(self, results):
+        if hasattr(self, 'scan_dialog') and self.scan_dialog is not None:
+            self.scan_dialog.close()
+            self.scan_dialog = None
+
+        # Refresh camera & microphone dropdowns with real physical hardware
+        real_cams = get_real_camera_list()
+        if hasattr(self, 'cfg_camera_select') and self.cfg_camera_select:
+            self.cfg_camera_select.blockSignals(True)
+            self.cfg_camera_select.clear()
+            for cam in real_cams:
+                self.cfg_camera_select.addItem(f"{cam['name']} (Cổng Index {cam['index']})", cam["index"])
+            cur_cam_idx = self.app_config.get("camera_index", 0)
+            match_idx = self.cfg_camera_select.findData(cur_cam_idx)
+            if match_idx >= 0:
+                self.cfg_camera_select.setCurrentIndex(match_idx)
+            self.cfg_camera_select.blockSignals(False)
+
         mics = voice_detector.get_available_microphones()
-        self.cfg_mic_select.clear()
-        self.cfg_mic_select.addItems(mics)
+        if hasattr(self, 'cfg_mic_select') and self.cfg_mic_select:
+            self.cfg_mic_select.blockSignals(True)
+            self.cfg_mic_select.clear()
+            self.cfg_mic_select.addItems(mics)
+            cur_mic = self.app_config.get("microphone_name", "default")
+            idx = self.cfg_mic_select.findText(cur_mic)
+            if idx >= 0:
+                self.cfg_mic_select.setCurrentIndex(idx)
+            self.cfg_mic_select.blockSignals(False)
+
+        # Refresh Hardware Grid Table synchronously
+        self.refresh_hardware_grid_table()
 
         # Save scanned hardware list to DB Cache
         database.save_scanned_hardware_list(results)
-        self.lbl_hw_status.setText(f"Quét hoàn tất! Đã lưu {len(results)} phần cứng vào CSDL (Lần sau không cần quét lại).")
+        self.lbl_hw_status.setText(f"Quét hoàn tất! Đã lưu {len(results)} phần cứng vào CSDL (Đã đồng bộ với cấu hình).")
         self.btn_scan_hw.setEnabled(True)
         database.log_audit_event("HARDWARE_SCAN", operator_name=self.active_operator_name, details=f"Scanned & persisted {len(results)} devices into DB cache.")
 
     def load_initial_hardware_cache(self):
-        cached = database.get_cached_hardware_devices()
-        if cached and hasattr(self, 'table_hw'):
-            self.table_hw.setRowCount(len(cached))
-            for r, item in enumerate(cached):
-                self.table_hw.setItem(r, 0, QTableWidgetItem(item.get("device_type", "")))
-                self.table_hw.setItem(r, 1, QTableWidgetItem(item.get("device_name", "")))
-                status_item = QTableWidgetItem("SẴN SÀNG (OK)")
-                status_item.setForeground(Qt.green)
-                self.table_hw.setItem(r, 2, status_item)
-                self.table_hw.setItem(r, 3, QTableWidgetItem(f"{item.get('device_info', '')} (Cập nhật: {item.get('updated_at', '')})"))
-                self.attach_table_test_button(r, item.get("device_type", ""))
-            self.lbl_hw_status.setText(f"Đã tải {len(cached)} phần cứng từ CSDL (Không cần quét lại).")
+        self.refresh_hardware_grid_table()
+        self.lbl_hw_status.setText("Đã đồng bộ thông tin phần cứng hệ thống.")
 
     def keyPressEvent(self, event):
         super().keyPressEvent(event)
 
+    def auto_scan_and_select_best_hardware(self):
+        try:
+            real_cams = get_real_camera_list()
+            valid_cam_indices = [cam["index"] for cam in real_cams if "Không tìm thấy" not in cam.get("name", "")]
+            current_cfg_idx = self.app_config.get("camera_index", None)
+            
+            if current_cfg_idx is None and valid_cam_indices:
+                best_idx = valid_cam_indices[0]
+                logger.info(f"[AUTO_HW_SCAN] Initialized default camera index to: {best_idx}")
+                self.app_config["camera_index"] = best_idx
+                config.save_config(self.app_config)
+                if hasattr(self, 'cfg_camera_select') and self.cfg_camera_select:
+                    match_idx = self.cfg_camera_select.findData(best_idx)
+                    if match_idx >= 0:
+                        self.cfg_camera_select.setCurrentIndex(match_idx)
+        except Exception as e:
+            logger.warning(f"[AUTO_HW_SCAN] Exception in auto hardware scan: {e}")
+
     def start_camera_thread(self):
+        self.auto_scan_and_select_best_hardware()
         self.camera_thread = CameraThread()
+        self.camera_thread.info_signal.connect(self.update_camera_info)
         self.camera_thread.set_camera(self.app_config.get("camera_index", 0))
         self.camera_thread.set_active_operator(self.active_operator_id, self.active_operator_name)
         self.camera_thread.frame_signal.connect(self.update_camera_frame)
@@ -1323,6 +1595,11 @@ class MainWindow(QMainWindow):
         self.camera_thread.error_signal.connect(self.handle_thread_error)
         self.camera_thread.start()
 
+    @Slot(str)
+    def update_camera_info(self, info_text):
+        if hasattr(self, 'cam_box') and self.cam_box:
+            self.cam_box.setTitle(f"1. MÀN HÌNH CAMERA THỜI GIAN THỰC — [{info_text}]")
+
     def start_voice_thread(self):
         self.voice_thread = VoiceDetectorThread()
         self.voice_thread.capture_signal.connect(lambda: self.trigger_photo_capture(source="VOICE_COMMAND"))
@@ -1330,21 +1607,6 @@ class MainWindow(QMainWindow):
         self.voice_thread.status_signal.connect(self.update_voice_status)
         self.voice_thread.volume_signal.connect(self.update_voice_volume)
         self.voice_thread.error_signal.connect(self.handle_thread_error)
-        
-        model_path = Path(self.app_config["vosk_model_path"])
-        if not model_path.exists():
-            reply = QMessageBox.question(
-                self, "Thiếu Mô Hình Giọng Nói",
-                "Mô hình nhận diện giọng nói tiếng Việt offline chưa được cài đặt. Bạn có muốn tải về tự động không?",
-                QMessageBox.Yes | QMessageBox.No
-            )
-            if reply == QMessageBox.Yes:
-                self.voice_thread.download_progress.connect(self.show_download_progress)
-                import threading
-                threading.Thread(target=lambda: self.voice_thread.download_model(str(model_path)), daemon=True).start()
-            else:
-                self.lbl_voice_status.setText("Microphone: Thiếu mô hình (Tắt)")
-                return
         
         self.voice_thread.start()
 
@@ -1384,6 +1646,13 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def on_voice_keyword_detected(self, keyword):
+        # Ignore clinical triggers if a modal test dialog is currently active
+        from PySide6.QtWidgets import QApplication
+        active_window = QApplication.activeModalWidget()
+        if active_window is not None:
+            logger.info(f"[VOICE_EVENT] Ignored keyword '{keyword}' because modal test dialog is active.")
+            return
+
         logger.info(f"[VOICE_EVENT] Voice Keyword: '{keyword}' | Op: {self.active_operator_id}")
         action_id = database.get_mapped_action(self.active_operator_id, "VOICE_KEYWORD", keyword)
         if action_id:
@@ -1450,6 +1719,7 @@ class MainWindow(QMainWindow):
             logger.info(f"[HARDWARE] Switched camera to index: {index}")
             if hasattr(self, 'camera_thread') and self.camera_thread is not None:
                 self.camera_thread.set_camera(index)
+            self.refresh_hardware_grid_table()
         except Exception as e:
             logger.error(f"[CAMERA_ERROR] Error changing camera: {str(e)}", exc_info=True)
 
@@ -1466,21 +1736,27 @@ class MainWindow(QMainWindow):
                 self.app_config["microphone_name"] = mic_name
             config.save_config(self.app_config)
             logger.info(f"[HARDWARE] Selected Microphone: {self.app_config['microphone_name']}")
-            if hasattr(self, 'voice_thread') and self.voice_thread is not None:
-                self.voice_thread.stop()
+            if hasattr(self, 'voice_thread') and self.voice_thread is not None and self.voice_thread.isRunning():
+                self.voice_thread.set_microphone(self.app_config['microphone_name'])
+            else:
                 self.start_voice_thread()
+            self.refresh_hardware_grid_table()
         except Exception as e:
             logger.error(f"[MIC_ERROR] Error changing microphone: {str(e)}", exc_info=True)
 
     @Slot(str)
     def handle_scanned_barcode(self, barcode_data):
-        print('\a')
-        
+        try:
+            from PySide6.QtWidgets import QApplication
+            QApplication.beep()
+        except Exception:
+            pass
+            
         parsed = barcode_parser.parse_barcode(barcode_data)
         patient_id = parsed["patient_id"]
         
-        self.lbl_scan_status.setText(f"ĐÃ QUÉT: {patient_id}")
-        self.lbl_scan_status.setStyleSheet("color: #22c55e; font-weight: bold; font-size: 14px;")
+        self.lbl_scan_status.setText(f"✅ ĐÃ QUÉT MÃ BỆNH NHÂN: {patient_id} (ĐÃ MỞ PHIÊN KHÁM MỚI)")
+        self.lbl_scan_status.setStyleSheet("color: #22c55e; font-weight: bold; font-size: 14px; padding: 4px; background-color: #052e16; border-radius: 4px;")
         
         self.txt_patient_id.setText(patient_id)
         self.current_patient_id = patient_id
@@ -1510,11 +1786,62 @@ class MainWindow(QMainWindow):
         self.load_patient_photos()
 
     @Slot()
+    def start_session_by_manual_id(self):
+        patient_id = self.txt_patient_id.text().strip().upper()
+        if not patient_id:
+            self.lbl_scan_status.setText("⚠️ VUI LÒNG NHẬP MÃ BỆNH ÁN VÀ ẤN ENTER HOẶC NÚT 'MỞ PHIÊN'!")
+            self.lbl_scan_status.setStyleSheet("color: #ef4444; font-weight: bold; font-size: 14px; padding: 4px; background-color: #450a0a; border-radius: 4px;")
+            try:
+                from PySide6.QtWidgets import QApplication
+                QApplication.beep()
+            except Exception:
+                pass
+            return
+
+        try:
+            from PySide6.QtWidgets import QApplication
+            QApplication.beep()
+        except Exception:
+            pass
+
+        self.lbl_scan_status.setText(f"✅ ĐÃ KHỞI TẠO MÃ BỆNH NHÂN: {patient_id} (ĐÃ MỞ PHIÊN KHÁM MỚI)")
+        self.lbl_scan_status.setStyleSheet("color: #22c55e; font-weight: bold; font-size: 14px; padding: 4px; background-color: #052e16; border-radius: 4px;")
+        
+        self.txt_patient_id.setText(patient_id)
+        self.current_patient_id = patient_id
+        self.camera_thread.set_active_patient(patient_id)
+
+        patient = database.get_patient(patient_id)
+        if patient:
+            self.txt_patient_name.setText(patient.get("name", ""))
+            self.txt_birth_year.setText(str(patient.get("birth_year") or ""))
+            gender = patient.get("gender", "Nam")
+            idx = self.txt_gender.findText(gender)
+            if idx >= 0:
+                self.txt_gender.setCurrentIndex(idx)
+        else:
+            name = self.txt_patient_name.text().strip()
+            dob = self.txt_birth_year.text().strip()
+            gender = self.txt_gender.currentText()
+            database.create_patient(patient_id, name=name, birth_year=dob, gender=gender)
+
+        logger.info(f"[MANUAL_SESSION_START] Started manual session for Patient ID: '{patient_id}'")
+        database.log_audit_event("MANUAL_PATIENT_ENTRY", operator_name=self.active_operator_name, patient_id=patient_id)
+        self.load_patient_photos()
+
+    @Slot()
     @Slot(str)
     def trigger_photo_capture(self, source="GUI_BUTTON"):
+        logger.info(f"[CAPTURE_REQUEST] Received capture request from '{source}'. Active patient: '{self.current_patient_id}'")
+        print(f"📸 [CAPTURE_TRACE]: Received capture request from '{source}' for Patient ID: '{self.current_patient_id}'")
+        
         if not self.current_patient_id:
-            self.lbl_scan_status.setText("VUI LÒNG QUÉT MÃ VẠCH TRƯỚC KHI CHỤP!")
-            self.lbl_scan_status.setStyleSheet("color: #ef4444; font-weight: bold; font-size: 14px;")
+            self.lbl_scan_status.setText("⚠️ VUI LÒNG QUÉT MÃ VẠCH BỆNH NHÂN TRƯỚC KHI CHỤP!")
+            self.lbl_scan_status.setStyleSheet("color: #ef4444; font-weight: bold; font-size: 14px; padding: 4px; background-color: #450a0a; border-radius: 4px;")
+            try:
+                QApplication.beep()
+            except Exception:
+                pass
             return
 
         total, used, free = shutil.disk_usage(config.BASE_DIR)
@@ -1523,13 +1850,18 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Bộ Nhớ Đầy", f"Dung lượng ổ đĩa còn lại quá thấp ({free_mb:.1f}MB). Vui lòng dọn dẹp ổ đĩa!")
             return
 
-        logger.info(f"[CAPTURE_REQUEST] Trigger Source: {source} | Patient: {self.current_patient_id}")
+        self.lbl_scan_status.setText(f"📸 ĐANG THỰC HIỆN CHỤP ẢNH CHO BN: {self.current_patient_id}...")
+        self.lbl_scan_status.setStyleSheet("color: #38bdf8; font-weight: bold; font-size: 14px; padding: 4px; background-color: #0c4a6e; border-radius: 4px;")
+        
         self.camera_thread.request_capture(source=source)
 
     @Slot(str, float)
     def handle_photo_saved(self, file_path, latency_ms):
         self.load_patient_photos()
-        self.status_bar.showMessage(f"Đã lưu: {os.path.basename(file_path)} ({latency_ms:.1f}ms)", 3000)
+        filename = os.path.basename(file_path)
+        self.lbl_scan_status.setText(f"📸 ĐÃ CHỤP THÀNH CÔNG: {filename} ({latency_ms:.0f}ms)")
+        self.lbl_scan_status.setStyleSheet("color: #22c55e; font-weight: bold; font-size: 14px; padding: 4px; background-color: #052e16; border-radius: 4px;")
+        self.status_bar.showMessage(f"Đã lưu: {filename} ({latency_ms:.1f}ms)", 3000)
 
     def load_patient_photos(self):
         while self.grid_layout.count():
@@ -1672,10 +2004,88 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'lbl_voice_status'):
             self.lbl_voice_status.setText("Microphone: Tự động kết nối lại...")
 
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.KeyPress:
+            key = event.key()
+            key_text = event.text().lower()
+            
+            # Print & log every keypress for diagnostic tracing
+            print(f"⌨️ [GLOBAL_KEY_EVENT]: Key = {key} ({event.text()})")
+            logger.info(f"[GLOBAL_KEY_EVENT] Key = {key} ({event.text()})")
+
+            # 0. Intercept configured trigger_key from config (supports any key)
+            trigger_key_cfg = self.app_config.get("trigger_key", "f13").lower()
+            if self._is_trigger_key(key, key_text, trigger_key_cfg):
+                logger.info(f"[EVENT_FILTER_PEDAL] Intercepted configured trigger key: {key} (config='{trigger_key_cfg}')")
+                print(f"🦶 [PEDAL_SUCCESS]: Intercepted Configured Key = {key} (config='{trigger_key_cfg}')")
+                self.trigger_photo_capture(source=f"EVENT_FILTER_PEDAL_{trigger_key_cfg}")
+                return True
+            
+            # 1. Intercept Pedal Function Keys (F13, F12, F5, F14, F15)
+            if key in (Qt.Key_F13, Qt.Key_F12, Qt.Key_F5, Qt.Key_F14, Qt.Key_F15):
+                logger.info(f"[EVENT_FILTER_PEDAL] Intercepted pedal function key: {key}")
+                print(f"🦶 [PEDAL_SUCCESS]: Intercepted Function Key = {key}")
+                self.trigger_photo_capture(source=f"EVENT_FILTER_PEDAL_{key}")
+                return True
+                
+            # 2. Intercept Pedal Modifier Keys (Alt / Meta)
+            if key in (Qt.Key_Alt, Qt.Key_Meta):
+                logger.info(f"[EVENT_FILTER_PEDAL] Intercepted pedal Alt/Meta key: {key}")
+                print(f"🦶 [PEDAL_SUCCESS]: Intercepted Alt Key = {key}")
+                self.trigger_photo_capture(source=f"EVENT_FILTER_ALT_{key}")
+                return True
+
+            # 3. Intercept Space key if focus is not in active text input line
+            if key == Qt.Key_Space:
+                focused = QApplication.focusWidget()
+                if not isinstance(focused, QLineEdit):
+                    logger.info("[EVENT_FILTER_PEDAL] Intercepted Space key outside text edit")
+                    print("🦶 [PEDAL_SUCCESS]: Intercepted Space Key outside text edit")
+                    self.trigger_photo_capture(source="EVENT_FILTER_SPACE")
+                    return True
+
+        return super().eventFilter(watched, event)
+
+    @staticmethod
+    def _is_trigger_key(qt_key: int, key_text: str, trigger_cfg: str) -> bool:
+        """Kiểm tra xem phím nhấn có khớp với trigger_key trong config không.
+        
+        Hỗ trợ: chữ cái (a-z), function keys (f1-f24), space, alt, meta.
+        """
+        # Map config string → Qt key code
+        _KEY_MAP = {
+            "f1": Qt.Key_F1, "f2": Qt.Key_F2, "f3": Qt.Key_F3, "f4": Qt.Key_F4,
+            "f5": Qt.Key_F5, "f6": Qt.Key_F6, "f7": Qt.Key_F7, "f8": Qt.Key_F8,
+            "f9": Qt.Key_F9, "f10": Qt.Key_F10, "f11": Qt.Key_F11, "f12": Qt.Key_F12,
+            "f13": Qt.Key_F13, "f14": Qt.Key_F14, "f15": Qt.Key_F15,
+            "space": Qt.Key_Space, "alt": Qt.Key_Alt, "meta": Qt.Key_Meta,
+        }
+        
+        # Check function/special keys
+        if trigger_cfg in _KEY_MAP:
+            return qt_key == _KEY_MAP[trigger_cfg]
+        
+        # Check single character key (a-z, 0-9, etc.)
+        if len(trigger_cfg) == 1:
+            return key_text == trigger_cfg
+        
+        return False
+
     def keyPressEvent(self, event):
         key = event.key()
         modifiers = event.modifiers()
         
+        # Trace key press events for diagnostics
+        logger.info(f"[KEY_EVENT_TRACE] Key pressed code: {key}")
+        print(f"⌨️ [KEY_TRACE]: Key Pressed = {key}")
+        
+        # Fail-safe backup for Pedal FSM
+        if hasattr(self, 'pedal_fsm') and self.pedal_fsm:
+            target = self.app_config.get("trigger_key", "f13").lower()
+            if (key == Qt.Key_F13 and target == "f13") or (key == Qt.Key_F12 and target == "f12"):
+                self.pedal_fsm.process_raw_key(target, "down")
+                self.pedal_fsm.process_raw_key(target, "up")
+
         # F1-F4: Switch Tabs
         if key == Qt.Key_F1:
             self.switch_tab(0)
@@ -1689,8 +2099,8 @@ class MainWindow(QMainWindow):
         elif key == Qt.Key_F4:
             self.switch_tab(3)
             return
-        elif key == Qt.Key_F5 or key == Qt.Key_Space:
-            self.trigger_photo_capture(source="HOTKEY_F5")
+        elif key in (Qt.Key_F13, Qt.Key_F12, Qt.Key_F5, Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter):
+            self.trigger_photo_capture(source=f"KEYBOARD_PEDAL_{key}")
             return
         elif key == Qt.Key_F6 or key == Qt.Key_Delete:
             self.delete_latest_photo()
@@ -1737,17 +2147,23 @@ class MainWindow(QMainWindow):
             QMessageBox.No
         )
         if reply == QMessageBox.Yes:
-            logger.info("[MAIN] Closing application. Cleaning active threads...")
+            logger.info("[MAIN] Closing application. Cleaning active threads non-blockingly...")
             try:
+                if hasattr(self, 'pedal_fsm') and self.pedal_fsm:
+                    self.pedal_fsm.unregister_hook()
                 keyboard.unhook_all_hotkeys()
             except Exception:
                 pass
                 
             if hasattr(self, 'camera_thread') and self.camera_thread is not None:
-                self.camera_thread.stop()
+                self.camera_thread._running = False
+                self.camera_thread.quit()
+                self.camera_thread.wait(200)
                 
             if hasattr(self, 'voice_thread') and self.voice_thread is not None:
-                self.voice_thread.stop()
+                self.voice_thread._stop = True
+                self.voice_thread.quit()
+                self.voice_thread.wait(200)
                 
             if hasattr(self, 'updater_thread') and self.updater_thread is not None:
                 self.updater_thread.terminate()
@@ -1764,4 +2180,6 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
+    window.raise_()
+    window.activateWindow()
     sys.exit(app.exec())

@@ -1,286 +1,356 @@
-import os
-import json
+"""
+voice_detector — VoiceDetectorThread (Orchestrator)
+
+Thread Qt chạy nền, lắng nghe microphone và phát lệnh giọng nói.
+Logic thư viện nằm trong package voice_lib/.
+
+Signals:
+    capture_signal()   — Deprecated, giữ backward compatibility
+    keyword_signal(str) — Lệnh đã khớp: "chụp", "xóa", "tiếp", "xem"
+    status_signal(str)  — Trạng thái: "Listening", "Error", ...
+    volume_signal(int)  — Mức âm lượng 0-100
+    log_signal(str)     — Sự kiện nhận dạng để hiển thị UI
+    error_signal(str)   — Thông báo lỗi
+    download_progress(int) — Tiến trình tải model 0-100
+"""
+
 import logging
-import math
-import struct
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
+
 from PySide6.QtCore import QThread, Signal
+
+from voice_lib.microphone import (
+    is_valid_physical_microphone,
+    get_real_physical_microphones,
+    get_available_microphones,
+    find_device_index,
+    get_native_sample_rate,
+)
+from voice_lib.audio_processing import (
+    resample_pcm16,
+    apply_software_agc,
+    compute_rms,
+    compute_volume_level,
+    VAD_RMS_THRESHOLD,
+    VAD_RAW_RMS_THRESHOLD,
+    SILENCE_FRAME_COUNT,
+    MIN_SPEECH_FRAMES,
+    MAX_SPEECH_FRAMES,
+    COOLDOWN_SECONDS,
+)
+from voice_lib.speech_recognizer import (
+    match_vietnamese_keyword,
+    WhisperRecognizer,
+)
 
 logger = logging.getLogger("PatientApp")
 
-def get_real_physical_microphones():
-    raw_mics = []
-    try:
-        from PySide6.QtMultimedia import QMediaDevices
-        for mic in QMediaDevices.audioInputs():
-            desc = mic.description().strip()
-            if desc and desc not in raw_mics:
-                raw_mics.append(desc)
-    except Exception:
-        pass
-    try:
-        import pyaudio
-        pa = pyaudio.PyAudio()
-        for i in range(pa.get_device_count()):
-            dev = pa.get_device_info_by_index(i)
-            if dev.get("maxInputChannels", 0) > 0:
-                name = dev.get("name", "").strip()
-                if name and "Primary" not in name and "Mapper" not in name:
-                    # Exclude truncated duplicates of existing QMediaDevices names
-                    already_covered = any(name in r or r in name for r in raw_mics)
-                    if not already_covered:
-                        raw_mics.append(name)
-        pa.terminate()
-    except Exception:
-        pass
-    return raw_mics
 
-def get_available_microphones():
-    mics = ["Mặc định hệ thống"]
-    raw_mics = get_real_physical_microphones()
-    for name in raw_mics:
-        if name not in mics:
-            mics.append(name)
-    return mics
+# ─── Re-exports cho backward compatibility với main.py ──────────────────────
+# main.py gọi: voice_detector.get_available_microphones()
+#               voice_detector.get_real_physical_microphones()
+# Giữ nguyên để không cần sửa main.py.
+
 
 class VoiceDetectorThread(QThread):
-    capture_signal = Signal()
-    keyword_signal = Signal(str)  # Emits: 'chụp', 'xóa', 'tiếp', 'xem'
-    status_signal = Signal(str)
-    volume_signal = Signal(int)  # 0 to 100
-    log_signal = Signal(str)     # Emits live speech events and recognized text
-    error_signal = Signal(str)
-    download_progress = Signal(int) # 0 to 100
+    """Thread Qt chạy nền: lắng nghe mic → VAD → Whisper → keyword matching → emit signal."""
 
-    def __init__(self, mic_name="default"):
+    capture_signal = Signal()
+    keyword_signal = Signal(str)     # "chụp", "xóa", "tiếp", "xem"
+    status_signal = Signal(str)
+    volume_signal = Signal(int)      # 0-100
+    log_signal = Signal(str)
+    error_signal = Signal(str)
+    download_progress = Signal(int)  # 0-100
+
+    def __init__(self, mic_name: str = "default"):
         super().__init__()
         self.mic_name = mic_name
+        self.pending_mic_switch: str | None = None
         self._stop = False
         self.pyaudio_stream = None
         self.pyaudio_instance = None
-        self.last_trigger_time = 0
+        self.last_trigger_time: float = 0
         self.cooldown_active = False
+        self.lib_status_msg: str = ""
+
+    # ─── Public API ─────────────────────────────────────────────────────
+
+    def set_microphone(self, mic_name: str):
+        """Lên lịch chuyển mic an toàn (xử lý trên thread)."""
+        if self.mic_name != mic_name:
+            logger.info(f"[VOICE] Scheduled safe microphone switch to: '{mic_name}'")
+            self.pending_mic_switch = mic_name
 
     def stop(self):
+        """Dừng thread an toàn."""
         self._stop = True
-        if self.pyaudio_stream:
-            try:
-                if self.pyaudio_stream.is_active():
-                    self.pyaudio_stream.stop_stream()
-                self.pyaudio_stream.close()
-                self.pyaudio_stream = None
-            except Exception:
-                pass
-        self.wait(1000)
+        if self.isRunning():
+            self.quit()
+            self.wait(200)
 
-    def download_model(self, dest_path):
-        import config
-        app_config = config.load_config()
-        url = app_config.get("vosk_model_url", "http://192.168.1.100/models/vosk-model-small-vn-0.22.zip")
-        zip_path = Path(dest_path).parent / "model.zip"
-        
-        try:
-            self.status_signal.emit("Downloading Model from Intranet...")
-            
-            if url.startswith("http://") or url.startswith("https://"):
-                def report_hook(block_num, block_size, total_size):
-                    if total_size > 0:
-                        percent = int(block_num * block_size * 100 / total_size)
-                        self.download_progress.emit(min(100, percent))
-                
-                urllib.request.urlretrieve(url, zip_path, reporthook=report_hook)
-            else:
-                # Copy directly from local Intranet network share
-                import shutil
-                shutil.copy(url, zip_path)
-                self.download_progress.emit(100)
-
-            self.status_signal.emit("Extracting Model...")
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(Path(dest_path).parent)
-            
-            if zip_path.exists():
-                zip_path.unlink()
-                
-            self.status_signal.emit("Model Installed")
-            return True
-        except Exception as e:
-            logger.error(f"Error downloading Vosk model: {str(e)}", exc_info=True)
-            self.error_signal.emit(f"Download failed: {str(e)}")
-            self.status_signal.emit("Model missing")
-            if zip_path.exists():
-                zip_path.unlink()
-            return False
+    # ─── Main thread loop ───────────────────────────────────────────────
 
     def run(self):
         self._stop = False
         import config
         app_config = config.load_config()
-        model_path = Path(app_config["vosk_model_path"])
-        
-        # Check and download model if missing
-        if not model_path.exists():
-            self.status_signal.emit("Model missing")
+
+        # Kiểm tra thư viện
+        if not self._check_libraries():
             return
 
-        try:
-            import vosk
-            import pyaudio
-        except ImportError as e:
-            logger.error(f"Required voice libs not imported: {str(e)}")
-            self.error_signal.emit(f"Library missing: {str(e)}")
-            self.status_signal.emit("Error")
-            return
+        # Khởi tạo Whisper recognizer
+        recognizer = self._init_recognizer()
 
-        try:
-            self.status_signal.emit("Initializing Voice Model...")
-            model = vosk.Model(str(model_path))
-            grammar_str = '["chụp", "xóa", "tiếp", "xem", "[unk]"]'
-            rec = vosk.KaldiRecognizer(model, 16000, grammar_str)
-            
-            import time
-            last_partial = ""
-            current_vol = 0
-            
-            while not self._stop:
-                try:
-                    if not self.pyaudio_instance:
-                        self.pyaudio_instance = pyaudio.PyAudio()
-                        
-                    # Select input device based on self.mic_name or config
-                    device_index = None
-                    mic_target = self.mic_name if (self.mic_name and self.mic_name != "default" and self.mic_name != "Mặc định hệ thống") else app_config.get("microphone_name", "default")
-                    
-                    if mic_target and mic_target != "default" and mic_target != "Mặc định hệ thống":
-                        for i in range(self.pyaudio_instance.get_device_count()):
-                            try:
-                                dev_info = self.pyaudio_instance.get_device_info_by_index(i)
-                                dev_n = dev_info.get("name", "")
-                                if dev_info.get("maxInputChannels", 0) > 0 and (mic_target in dev_n or dev_n in mic_target):
-                                    device_index = i
-                                    break
-                            except Exception:
-                                pass
+        # Main loop: mở mic → đọc audio → VAD → nhận dạng
+        current_vol = 0
+        while not self._stop:
+            try:
+                if not self.pyaudio_instance:
+                    import pyaudio
+                    self.pyaudio_instance = pyaudio.PyAudio()
 
-                    if device_index is None:
-                        try:
-                            default_dev = self.pyaudio_instance.get_default_input_device_info()
-                            device_index = default_dev.get("index")
-                        except Exception:
-                            for i in range(self.pyaudio_instance.get_device_count()):
-                                try:
-                                    dev_info = self.pyaudio_instance.get_device_info_by_index(i)
-                                    if dev_info.get("maxInputChannels", 0) > 0:
-                                        device_index = i
-                                        break
-                                except Exception:
-                                    pass
-
-                    if device_index is None:
-                        self.status_signal.emit("Không có Microphone")
-                        time.sleep(2.0)
-                        continue
-
-                    # Attempt stream opening
-                    try:
-                        self.pyaudio_stream = self.pyaudio_instance.open(
-                            format=pyaudio.paInt16,
-                            channels=1,
-                            rate=16000,
-                            input=True,
-                            input_device_index=device_index,
-                            frames_per_buffer=800
-                        )
-                        self.pyaudio_stream.start_stream()
-                        self.status_signal.emit("Listening")
-                        logger.info(f"Vosk voice detector started listening on device index {device_index}.")
-                    except Exception as open_err:
-                        logger.warning(f"[MIC_HOTPLUG] Cannot open mic device index {device_index}: {open_err}. Retrying in 2s...")
-                        self.cleanup_stream()
-                        time.sleep(2.0)
-                        continue
-
-                    # Stream reading loop
-                    while not self._stop:
-                        try:
-                            avail = self.pyaudio_stream.get_read_available()
-                            if avail < 800:
-                                time.sleep(0.01)
-                                if current_vol > 0:
-                                    current_vol = max(0, int(current_vol * 0.7))
-                                    self.volume_signal.emit(current_vol)
-                                continue
-                                
-                            data = self.pyaudio_stream.read(800, exception_on_overflow=False)
-                            if len(data) == 0:
-                                continue
-                        except Exception as read_err:
-                            logger.warning(f"[MIC_STREAM_LOST] Audio read error ({read_err}). Auto-reconnecting mic in 1.5s...")
-                            self.log_signal.emit("⚠️ [CẢNH BÁO]: Mất kết nối Microphone. Đang tự động kết nối lại...")
-                            time.sleep(1.5)
-                            break # Break inner loop to re-open stream and re-detect device
-                        
-                        # Calculate Volume RMS for visual feedback
-                        count = len(data) / 2
-                        format_str = f"{int(count)}h"
-                        shorts = struct.unpack(format_str, data)
-                        sum_squares = sum(s * s for s in shorts)
-                        rms = math.sqrt(sum_squares / count) if count > 0 else 0
-                        raw_vol = min(100, int((rms / 1200.0) * 100))
-                        current_vol = max(raw_vol, int(current_vol * 0.8))
-                        self.volume_signal.emit(current_vol)
-                        
-                        # Check recognizer
-                        keywords = ["chụp", "xóa", "tiếp", "xem"]
-                        if rec.AcceptWaveform(data):
-                            res = json.loads(rec.Result())
-                            text = res.get("text", "").lower().strip()
-                            if text:
-                                self.log_signal.emit(f"💬 [LỜI NÓI THỜI GIAN THẬT]: \"{text}\"")
-                            for kw in keywords:
-                                if kw in text and not self.cooldown_active:
-                                    logger.info(f"[VOICE_KEYWORD] Detected keyword in final result: '{kw}'")
-                                    self.log_signal.emit(f"✅ [ĐÃ KHỚP LỆNH CHUẨN]: \"{kw.upper()}\"")
-                                    self.keyword_signal.emit(kw)
-                                    self.cooldown_active = True
-                                    self.last_trigger_time = time.time()
-                                    break
-                        else:
-                            partial_res = json.loads(rec.PartialResult())
-                            partial_text = partial_res.get("partial", "").lower().strip()
-                            if partial_text and partial_text != last_partial:
-                                self.log_signal.emit(f"🎙️ [ĐANG LẮNG NGHE]: \"{partial_text}\"...")
-                                for kw in keywords:
-                                    if kw in partial_text and not self.cooldown_active:
-                                        logger.info(f"[VOICE_KEYWORD] Detected keyword in partial result: '{kw}'")
-                                        self.log_signal.emit(f"✅ [ĐÃ KHỚP LỆNH CHUẨN]: \"{kw.upper()}\"")
-                                        self.keyword_signal.emit(kw)
-                                        self.cooldown_active = True
-                                        self.last_trigger_time = time.time()
-                                        break
-                                last_partial = partial_text
-                        
-                        # Reset cooldown after 2.0 seconds
-                        if self.cooldown_active and (time.time() - self.last_trigger_time > 2.0):
-                            self.cooldown_active = False
-                            last_partial = ""
-
-                    self.cleanup_stream()
-
-                except Exception as loop_err:
-                    logger.warning(f"[MIC_AUTO_RECONNECT] Host error/device change ({loop_err}). Auto-reconnecting in 2.0s...")
-                    self.cleanup_stream()
+                # Tìm device
+                device_index = find_device_index(
+                    self.pyaudio_instance,
+                    self.mic_name,
+                    app_config.get("microphone_name", "default"),
+                )
+                if device_index is None:
+                    self.status_signal.emit("Không có Microphone")
                     time.sleep(2.0)
-                    
-        except Exception as e:
-            logger.error(f"Error in voice detector thread: {str(e)}", exc_info=True)
+                    continue
+
+                # Mở stream
+                opened_rate, chunk_size = self._open_audio_stream(device_index)
+                if opened_rate is None:
+                    continue
+
+                self.pyaudio_stream.start_stream()
+                self.status_signal.emit("Listening")
+                logger.info(f"Voice detector listening on device {device_index} ({opened_rate}Hz)")
+
+                # Vòng lặp đọc audio + VAD
+                current_vol = self._stream_loop(recognizer, opened_rate, chunk_size, current_vol)
+
+                self.cleanup_stream()
+
+            except Exception as loop_err:
+                logger.warning(f"[MIC_AUTO_RECONNECT] Host error ({loop_err}). Reconnecting in 2s...")
+                self.cleanup_stream()
+                time.sleep(2.0)
+
+        self.cleanup()
+
+    # ─── Private helpers ────────────────────────────────────────────────
+
+    def _check_libraries(self) -> bool:
+        """Kiểm tra thư viện pyaudio có sẵn không."""
+        try:
+            import pyaudio  # noqa: F401
+            return True
+        except ImportError as e:
+            logger.error(f"Required voice libs not imported: {e}")
+            self.error_signal.emit(f"Library missing: {e}")
+            self.log_signal.emit(f"❌ [THƯ VIỆN LỖI]: Không nạp được thư viện - {e}")
             self.status_signal.emit("Error")
-        finally:
-            self.cleanup()
+            return False
+
+    def _init_recognizer(self) -> WhisperRecognizer:
+        """Khởi tạo WhisperRecognizer và emit trạng thái."""
+        self.lib_status_msg = "📦 [THƯ VIỆN]: Đang nạp mô hình Whisper AI..."
+        self.log_signal.emit(self.lib_status_msg)
+        # "small" đã có cache local — beam_size=1 + vad_filter + max 2s speech cho real-time
+        recognizer = WhisperRecognizer(model_size="small", device="cpu", compute_type="int8")
+
+        if recognizer.is_available():
+            self.lib_status_msg = "✅ [100% PURE WHISPER AI SMALL]: OpenAI Whisper AI Small (Real-Time Mode) ĐÃ SẴN SÀNG!"
+        else:
+            self.lib_status_msg = f"❌ [LỖI NẠP AI]: Không nạp được mô hình Whisper AI - {recognizer.load_error}"
+
+        self.log_signal.emit(self.lib_status_msg)
+        return recognizer
+
+    def _open_audio_stream(self, device_index: int) -> tuple[int | None, int]:
+        """Mở PyAudio stream. Thử native rate trước, fallback 16kHz.
+
+        Returns:
+            (opened_rate, chunk_size) hoặc (None, 0) nếu không mở được.
+        """
+        import pyaudio
+
+        native_rate = get_native_sample_rate(self.pyaudio_instance, device_index)
+
+        # Thử native rate
+        try:
+            chunk_size = int(native_rate * 0.05)  # 50ms per chunk
+            self.pyaudio_stream = self.pyaudio_instance.open(
+                format=pyaudio.paInt16,
+                channels=1,
+                rate=native_rate,
+                input=True,
+                input_device_index=device_index,
+                frames_per_buffer=chunk_size,
+            )
+            return native_rate, chunk_size
+        except Exception:
+            pass
+
+        # Fallback 16kHz
+        try:
+            chunk_size = 800  # 50ms at 16kHz
+            self.pyaudio_stream = self.pyaudio_instance.open(
+                format=pyaudio.paInt16,
+                channels=1,
+                rate=16000,
+                input=True,
+                input_device_index=device_index,
+                frames_per_buffer=chunk_size,
+            )
+            return 16000, chunk_size
+        except Exception as e:
+            logger.warning(f"[MIC_HOTPLUG] Cannot open mic {device_index}: {e}. Retry in 2s...")
+            self.cleanup_stream()
+            time.sleep(2.0)
+            return None, 0
+
+    def _stream_loop(
+        self,
+        recognizer: WhisperRecognizer,
+        opened_rate: int,
+        chunk_size: int,
+        current_vol: int,
+    ) -> int:
+        """Vòng lặp đọc audio stream, xử lý VAD, gửi tới Whisper khi kết thúc lời nói.
+
+        Returns:
+            current_vol cuối cùng (để truyền lại cho lần mở stream kế tiếp).
+        """
+        speech_frames: list[bytes] = []
+        silence_counter = 0
+        is_speaking = False
+
+        while not self._stop:
+            # Kiểm tra yêu cầu chuyển mic
+            if self.pending_mic_switch:
+                self.mic_name = self.pending_mic_switch
+                self.pending_mic_switch = None
+                logger.info(f"[VOICE] Safe mic switch to '{self.mic_name}'")
+                self.cleanup_stream()
+                break
+
+            # Đọc audio chunk
+            chunk_result = self._read_audio_chunk(opened_rate, chunk_size)
+            if chunk_result is None:
+                # Stream bị mất kết nối, cần mở lại
+                break
+            if not chunk_result:
+                # Chưa đủ data, chờ tiếp
+                if current_vol > 0:
+                    current_vol = max(0, int(current_vol * 0.7))
+                    self.volume_signal.emit(current_vol)
+                continue
+
+            raw_data, agc_data = chunk_result
+
+            # Tính volume cho UI (dùng AGC data cho visual feedback đẹp hơn)
+            rms_agc = compute_rms(agc_data)
+            raw_vol = compute_volume_level(rms_agc)
+            current_vol = max(raw_vol, int(current_vol * 0.8))  # Smooth decay
+            self.volume_signal.emit(current_vol)
+
+            # VAD: dùng RMS RAW (trước AGC) để tránh noise bị AGC boost
+            rms_raw = compute_rms(raw_data)
+
+            if rms_raw > VAD_RAW_RMS_THRESHOLD:
+                if not is_speaking:
+                    logger.info(f"[VAD] Speech START (rms_raw={rms_raw:.0f})")
+                silence_counter = 0
+                is_speaking = True
+                speech_frames.append(agc_data)  # Lưu AGC data cho Whisper
+
+                # ── Force transcribe nếu nói quá lâu (real-time) ──
+                if len(speech_frames) >= MAX_SPEECH_FRAMES:
+                    logger.info(f"[VAD] Force transcribe ({len(speech_frames)} frames = {len(speech_frames)*0.05:.1f}s)")
+                    if recognizer.is_available():
+                        self._handle_speech_end(recognizer, speech_frames)
+                    speech_frames = []
+                    is_speaking = False
+
+            elif is_speaking:
+                silence_counter += 1
+                speech_frames.append(agc_data)
+
+                # Kết thúc lời nói → nhận dạng
+                if silence_counter >= SILENCE_FRAME_COUNT:
+                    logger.info(f"[VAD] Speech END ({len(speech_frames)} frames)")
+                    is_speaking = False
+                    silence_counter = 0
+
+                    if recognizer.is_available() and len(speech_frames) > MIN_SPEECH_FRAMES:
+                        self._handle_speech_end(recognizer, speech_frames)
+
+                    speech_frames = []
+
+            # Reset cooldown
+            if self.cooldown_active and (time.time() - self.last_trigger_time > COOLDOWN_SECONDS):
+                self.cooldown_active = False
+
+        return current_vol
+
+    def _read_audio_chunk(self, opened_rate: int, chunk_size: int) -> tuple[bytes, bytes] | None:
+        """Đọc 1 chunk audio từ stream, resample + AGC.
+
+        Returns:
+            tuple[bytes, bytes]: (raw_16k, agc_data) — raw dùng cho VAD, agc dùng cho Whisper
+            False: Chưa đủ data (chờ tiếp)
+            None: Lỗi stream (cần mở lại)
+        """
+        try:
+            avail = self.pyaudio_stream.get_read_available()
+            if avail < chunk_size:
+                time.sleep(0.01)
+                return False
+
+            raw_bytes = self.pyaudio_stream.read(chunk_size, exception_on_overflow=False)
+            if len(raw_bytes) == 0:
+                return False
+
+            data_16k = resample_pcm16(raw_bytes, opened_rate, 16000)
+            data_agc = apply_software_agc(data_16k)
+            return (data_16k, data_agc)
+
+        except Exception as e:
+            logger.warning(f"[MIC_STREAM_LOST] Audio read error ({e}). Reconnecting in 1.5s...")
+            self.log_signal.emit("⚠️ [CẢNH BÁO]: Mất kết nối Microphone. Đang tự động kết nối lại...")
+            time.sleep(1.5)
+            return None
+
+    def _handle_speech_end(self, recognizer: WhisperRecognizer, speech_frames: list[bytes]):
+        """Xử lý khi VAD phát hiện kết thúc lời nói: gửi tới Whisper → khớp lệnh."""
+        text = recognizer.transcribe(speech_frames)
+        if not text:
+            return
+
+        logger.info(f"[WHISPER_AI_VAD] Decoded: '{text}'")
+        self.log_signal.emit(f'🤖 [OpenAI Whisper AI]: "{text}"')
+
+        matched_cmd = match_vietnamese_keyword(text)
+        if matched_cmd and not self.cooldown_active:
+            logger.info(f"[WHISPER_KEYWORD] Matched: '{matched_cmd}' from: '{text}'")
+            self.log_signal.emit(f'✅ [ĐÃ KHỚP LỆNH WHISPER]: "{matched_cmd.upper()}" (từ: "{text}")')
+            self.keyword_signal.emit(matched_cmd)
+            self.cooldown_active = True
+            self.last_trigger_time = time.time()
+
+    # ─── Cleanup ────────────────────────────────────────────────────────
 
     def cleanup_stream(self):
+        """Đóng PyAudio stream hiện tại."""
         try:
             if self.pyaudio_stream:
                 if self.pyaudio_stream.is_active():
@@ -291,6 +361,7 @@ class VoiceDetectorThread(QThread):
             logger.error(f"Error cleaning up pyaudio_stream: {e}")
 
     def cleanup(self):
+        """Đóng stream + terminate PyAudio instance."""
         self.cleanup_stream()
         try:
             if self.pyaudio_instance:
