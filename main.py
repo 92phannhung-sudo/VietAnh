@@ -35,7 +35,7 @@ from pedal_gesture_fsm import PedalGestureFSM
 from voice_detector import VoiceDetectorThread
 from updater import UpdateCheckerThread
 
-# Configure Logging according to SPECIFICATION: [YYYY-MM-DD HH:MM:SS,ms] [LEVEL] [MODULE] [THREAD_ID] - Message
+# Enterprise Production Logging Configuration
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -47,15 +47,37 @@ if hasattr(sys.stderr, "reconfigure"):
     except Exception:
         pass
 
-file_handler = RotatingFileHandler(config.LOG_PATH, maxBytes=5*1024*1024, backupCount=5, encoding="utf-8")
+# Production Rotating File Handler (10MB per file x 10 backups = max 100MB disk cap)
+file_handler = RotatingFileHandler(
+    config.LOG_PATH,
+    maxBytes=10 * 1024 * 1024,
+    backupCount=10,
+    encoding="utf-8"
+)
 stream_handler = logging.StreamHandler(sys.stdout)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] [%(name)s] [Thread-%(thread)d] - %(message)s",
-    handlers=[file_handler, stream_handler]
+formatter = logging.Formatter(
+    fmt="%(asctime)s [%(levelname)s] [%(name)s] [PID:%(process)d/Thread-%(thread)d] - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
 )
+file_handler.setFormatter(formatter)
+stream_handler.setFormatter(formatter)
+
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+root_logger.addHandler(file_handler)
+root_logger.addHandler(stream_handler)
+
 logger = logging.getLogger("PatientApp")
+
+# Global Exception Hook: Capture and log all unhandled application crashes
+def handle_uncaught_exception(exctype, value, tb):
+    if issubclass(exctype, KeyboardInterrupt):
+        sys.__excepthook__(exctype, value, tb)
+        return
+    logger.critical("❌ UNHANDLED FATAL CRASH IN PRODUCTION", exc_info=(exctype, value, tb))
+
+sys.excepthook = handle_uncaught_exception
 
 
 class CameraThread(QThread):
@@ -105,6 +127,8 @@ class CameraThread(QThread):
 
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+        # Enforce Hardware AutoFocus for Logitech C920e
+        self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
         
         self._running = True
         frame_counter = 0
@@ -156,8 +180,18 @@ class CameraThread(QThread):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         barcodes = pyzbar.decode(gray)
         
+        if not barcodes:
+            # Fallback for phone screen reflections / glossy medical paper
+            _, thresh = cv2.threshold(gray, 128, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+            barcodes = pyzbar.decode(thresh)
+        
         for barcode in barcodes:
-            barcode_data = barcode.data.decode("utf-8").strip()
+            try:
+                barcode_data = barcode.data.decode("utf-8", errors="ignore").strip()
+            except Exception:
+                continue
+            if not barcode_data:
+                continue
             current_time = time.time()
             if barcode_data != self.last_barcode_data or (current_time - self.last_barcode_time > 2.0):
                 self.last_barcode_data = barcode_data

@@ -28,6 +28,16 @@ The system is specified to interface with the following physical hardware detect
 * **Multi-Format Support**:
   * **1D Barcodes**: Code 128 / Code 39 (e.g. `PHCN2647781`, `KCB-2026-0012`).
   * **JSON QR Strings**: Extracts `id`, `name`, `birth_year`, and `gender` automatically (e.g. `{"id": "BN123", "name": "Nguyễn Văn A"}`).
+
+### 3.6. Standalone Offline Installation & Deployment Specification
+* **Zero Python Requirement**: Target PCs in hospital wards do NOT require Python or any external runtime installed.
+* **Standalone Bundle (`dist/PatientCaptureApp_v1.0_Offline`)**: Bundles PySide6, OpenCV, PyAudio, Vosk AI Vietnamese speech models (`vosk-model-small-vn-0.4`), SQLite, and config assets.
+* **Automated Admin Script (`install_admin.bat`)**:
+  * Requests Administrator elevation via native Windows `net session` check.
+  * Installs application to `C:\Program Files\PatientCaptureApp`.
+  * **Database Protection Rule**: Strictly preserves existing database records at `%APPDATA%\PatientCaptureApp\patients.db` (does NOT overwrite existing records during reinstall/upgrade).
+  * Automatically creates Desktop and Start Menu shortcuts.
+* **Automated Packaging (`build_package.py`)**: One-command build script (`.venv\Scripts\python build_package.py`) compiling source code and assembling ready-to-use distribution folders for USB transfer.
   * **URL QR Strings**: Extracts query parameters (e.g. `https://his.vn/emr?id=BN123`).
   * **Delimited Barcode Strings**: Splits by `|` or `;` (e.g. `BN123|Nguyễn Văn A|1952|Nam`).
 * **Windows Path Sanitization**: Automatically strips or replaces illegal folder characters (`\ / : * ? " < > |`) into clean underscores, ensuring filesystem operations never fail.
@@ -76,6 +86,10 @@ Each physical hardware component on Tab 4 includes dedicated interactive **`[ �
 * **Privacy & Isolation**: 100% offline operation for patient data security.
 * **Capture Latency**: Sub-150ms shutter trigger response.
 * **Database Concurrency**: SQLite with Write-Ahead Logging (`PRAGMA journal_mode=WAL;`), foreign keys enabled, and a 5-second busy timeout.
-### 4.2. Tracing & Logging Specification
-The application maintains an audit and diagnostic log at `logs/app.log` inside the project directory using Python's standard `logging` framework with a `RotatingFileHandler` (max 5MB x 5 backups). tracking barcode scans, shutter trigger sources (`FOOT_PEDAL`, `VOICE_COMMAND`, `GUI_BUTTON`), operator name, latency in milliseconds, hardware state, and DB transactions.
+### 4.2. Tracing & Enterprise Production Logging Specification
+* **Secure Production Log Path**: Maintains diagnostic & audit logs at `%APPDATA%\PatientCaptureApp\logs\app.log`. Guarantees 100% write permission compatibility on Windows 10/11 enterprise workstations without requiring UAC elevation.
+* **Rotating Log File Policy**: Uses `RotatingFileHandler` with `maxBytes = 10MB` and `backupCount = 10` (strict 100MB disk quota cap). Automatically rotates older logs without losing diagnostic history.
+* **Log Format & Encoding**: `%(asctime)s [%(levelname)s] [%(name)s] [PID:%(process)d/Thread:%(thread)d] - %(message)s` formatted in UTF-8 to prevent Vietnamese character encoding corruption.
+* **Global Unhandled Exception Interceptor**: Overrides `sys.excepthook` to catch and record any unhandled fatal crashes to `app.log` before application exit.
+* **Dual Audit Persistence**: Medical operations (patient photo capture, operator changes, hardware scans, barcode scans) are recorded BOTH to `app.log` and stored permanently in the SQLite `audit_logs` database table.
 * **OTA Security**: Background version checking over Intranet HTTP or LAN Shared Drive (`\\Server\Share\`). Downloads `update.zip`, verifies **SHA-256 Checksum**, extracts safely using Python `zipfile`, and requests graceful GUI shutdown.

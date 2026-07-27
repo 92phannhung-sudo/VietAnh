@@ -52,3 +52,26 @@ Mở cửa sổ **PowerShell** tại thư mục ứng dụng (`c:\Users\vinhd\De
   * **[ 🛠️ Test Bàn Đạp Chân ]**: Mở bảng danh sách 4 cử chỉ (1 giậm, 2 giậm, 3 giậm, nhấn giữ). Giậm chân lên bàn đạp $\rightarrow$ Cửa sổ tự động tích `[✓]` xanh tương ứng vào cử chỉ vừa giậm.
   * **[ 🛠️ Test Cổng COM ]**: Gửi tín hiệu kiểm tra kết nối RS232/USB Serial $\rightarrow$ Báo `Phản Hồi Cổng COM1: OK`.
 * **Đổi Chế Độ Màu Giao Diện:** Chuyển đổi giữa **Dark Slate (Mặc định)** và **Light Clinical (Sáng Y tế)**.
+
+---
+
+## 3. Quy Trình Cài Đặt Offline Trọn Gói Cho Máy Bệnh Viện (Windows 10/11 x64)
+
+### 🚀 Cài Đặt 1-Click (Dành Cho Máy Chưa Cài Python):
+1. Giải nén tệp **`PatientCaptureApp_v1.0_Offline.zip`** (hoặc chép thư mục `PatientCaptureApp_v1.0_Offline` từ USB).
+2. Nhấp chuột phải vào tệp **`install_admin.bat`** và chọn **`Run as administrator`** (Chạy dưới quyền Quản trị viên).
+3. Kịch bản cài đặt tự động thực hiện:
+   * Tạo thư mục cài đặt hệ thống tại `C:\Program Files\PatientCaptureApp`.
+   * Kiểm tra cơ sở dữ liệu bệnh nhân cũ tại `%APPDATA%\PatientCaptureApp\patients.db`. **Nếu đã có dữ liệu cũ, hệ thống giữ nguyên 100% (KHÔNG GHI ĐÈ).**
+   * Tự động tạo Icon lối tắt **"Chụp ảnh Bệnh nhân - BV 354"** ngoài Màn hình chính (Desktop) và Start Menu.
+4. Nhấp đúp vào Icon ngoài Desktop để mở ứng dụng lập tức.
+
+### 🗑️ Gỡ Bỏ Ứng Dụng:
+Nhấp chuột phải vào tệp **`uninstall_admin.bat`** và chọn **`Run as administrator`**. Kịch bản sẽ xóa lối tắt, dọn dẹp thư mục cài đặt và hỏi ý kiến người dùng trước khi quyết định giữ lại hay xóa CSDL bệnh nhân.
+
+### 📦 Quy Trình Đóng Gói Bản Cập Nhật Mới (Dành Cho Lập Trình Viên):
+Mỗi khi chỉnh sửa mã nguồn Python, chạy duy nhất 1 lệnh:
+```cmd
+.venv\Scripts\python build_package.py
+```
+Toàn bộ phần mềm sẽ được biên dịch lại thành gói `PatientCaptureApp_v1.0_Offline.zip` mới trong thư mục `dist/` sẵn sàng sao chép sang USB.

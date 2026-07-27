@@ -12,10 +12,23 @@ BASE_DIR.mkdir(parents=True, exist_ok=True)
 PHOTOS_DIR = BASE_DIR / "photos"
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Logs Paths (Project Root & App Data)
-LOGS_DIR = Path(__file__).parent / "logs"
+# Logs Paths (App Data Directory for Production Write Permissions)
+LOGS_DIR = BASE_DIR / "logs"
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 LOG_PATH = LOGS_DIR / "app.log"
+
+import sys
+
+def get_app_dir():
+    if getattr(sys, 'frozen', False):
+        return Path(sys.executable).parent
+    return Path(__file__).parent
+
+def get_vosk_model_path():
+    bundled_model = get_app_dir() / "vosk-model-small-vn-0.4"
+    if bundled_model.exists():
+        return str(bundled_model)
+    return str(BASE_DIR / "vosk-model-small-vn-0.4")
 
 DB_PATH = BASE_DIR / "app.db"
 CONFIG_FILE = BASE_DIR / "config.json"
@@ -25,7 +38,7 @@ DEFAULT_CONFIG = {
     "trigger_key": "f13",
     "camera_index": 0,
     "microphone_name": "default",
-    "vosk_model_path": str(BASE_DIR / "vosk-model-small-vn-0.4"),
+    "vosk_model_path": get_vosk_model_path(),
     "update_url": "http://192.168.1.100/updates/version.json",
     "enable_ota": False,  # Temporarily disabled for offline hospital setup
     "active_theme": "dark",
@@ -40,7 +53,7 @@ def load_config():
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-            data["vosk_model_path"] = str(BASE_DIR / "vosk-model-small-vn-0.4")
+            data["vosk_model_path"] = get_vosk_model_path()
             for k, v in DEFAULT_CONFIG.items():
                 if k not in data:
                     data[k] = v

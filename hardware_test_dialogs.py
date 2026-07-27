@@ -18,22 +18,23 @@ logger = logging.getLogger("PatientApp")
 
 
 class CameraTestDialog(QDialog):
-    """Interactive Camera & QR/Barcode Test Dialog"""
+    """Interactive Camera & QR/Barcode Test Dialog with Live Visual Tracking & Multi-Engine Barcode Scanner"""
     def __init__(self, parent=None, camera_index=0):
         super().__init__(parent)
         self.camera_index = camera_index
         self.setWindowTitle(f"📷 TEST HỆ THỐNG CAMERA (CỔNG INDEX {camera_index})")
-        self.resize(750, 550)
+        self.resize(800, 600)
         self.setModal(True)
         self.cap = None
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.process_frame)
         self.detected_codes = set()
+        self.frame_count = 0
         
-        self.init_ui()
+        self.setup_ui()
         self.start_camera()
 
-    def init_ui(self):
+    def setup_ui(self):
         layout = QVBoxLayout(self)
         
         # Header Info
@@ -54,6 +55,11 @@ class CameraTestDialog(QDialog):
         self.lbl_status.setStyleSheet("font-size: 13px; font-weight: bold; padding: 10px; background-color: #1e293b; color: #cbd5e1; border-radius: 6px;")
         layout.addWidget(self.lbl_status)
         
+        # Live Debug Tracker Label
+        self.lbl_debug = QLabel("📊 DEBUG TRACKER: Khung hình: 0 | Thuật toán: Đang khởi tạo...")
+        self.lbl_debug.setStyleSheet("font-size: 11px; font-family: Consolas, monospace; color: #38bdf8; background-color: #0f172a; padding: 6px; border-radius: 4px;")
+        layout.addWidget(self.lbl_debug)
+        
         # Close Button
         btn_close = QPushButton("Đóng Cửa Sổ Test")
         btn_close.setStyleSheet("padding: 8px 20px; font-size: 13px; background-color: #475569; color: white; border-radius: 6px;")
@@ -70,6 +76,9 @@ class CameraTestDialog(QDialog):
             if not self.cap.isOpened():
                 self.cap = cv2.VideoCapture(self.camera_index)
             if self.cap.isOpened():
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+                self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
                 self.timer.start(30)
             else:
                 self.lbl_status.setText("❌ KHÔNG THỂ MỞ CAMERA! Vui lòng kiểm tra lại cáp USB.")
@@ -82,25 +91,141 @@ class CameraTestDialog(QDialog):
         if self.cap and self.cap.isOpened():
             ret, frame = self.cap.read()
             if ret:
-                # 1. Barcode / QR Parsing using OpenCV QRCodeDetector
-                if not hasattr(self, 'qr_detector'):
-                    self.qr_detector = cv2.QRCodeDetector()
+                self.frame_count += 1
+                raw_data = None
+                barcode_type = "UNKNOWN"
+                points = None
+                engine_used = ""
+
+                # Stage 1: PyZbar on Original Grayscale
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 try:
-                    val, pts, _ = self.qr_detector.detectAndDecode(frame)
-                    if val:
-                        barcode_info = barcode_parser.parse_barcode(val)
-                        raw_data = barcode_info.get("raw_data", "")
-                        if raw_data and raw_data not in self.detected_codes:
-                            self.detected_codes.add(raw_data)
-                            try:
-                                import winsound
-                                winsound.Beep(1200, 150)
-                            except Exception:
-                                pass
-                            self.lbl_status.setText(f"✅ ĐÃ QUÉT THÀNH CÔNG MÃ BỆNH ÁN: [{raw_data}] - TRẠNG THÁI: TỐT (OK)")
-                            self.lbl_status.setStyleSheet("font-size: 13px; font-weight: bold; padding: 10px; background-color: #065f46; color: #6ee7b7; border-radius: 6px;")
-                except Exception as qr_err:
-                    pass
+                    from pyzbar import pyzbar
+                    barcodes = pyzbar.decode(gray)
+                    if barcodes:
+                        b = barcodes[0]
+                        raw_data = b.data.decode("utf-8", errors="ignore").strip()
+                        barcode_type = b.type
+                        if b.polygon:
+                            points = np.array([(p.x, p.y) for p in b.polygon], np.int32)
+                        engine_used = "PyZbar (Gốc)"
+                except Exception as e:
+                    logger.debug(f"[CAM_TEST_DEBUG] PyZbar raw failed: {e}")
+
+                # Stage 2: PyZbar on CLAHE Contrast Equalization (Fixes Phone Glare)
+                if not raw_data:
+                    try:
+                        from pyzbar import pyzbar
+                        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+                        equalized = clahe.apply(gray)
+                        barcodes = pyzbar.decode(equalized)
+                        if barcodes:
+                            b = barcodes[0]
+                            raw_data = b.data.decode("utf-8", errors="ignore").strip()
+                            barcode_type = b.type
+                            if b.polygon:
+                                points = np.array([(p.x, p.y) for p in b.polygon], np.int32)
+                            engine_used = "PyZbar (Khử Bóng CLAHE)"
+                    except Exception:
+                        pass
+
+                # Stage 3: PyZbar on Adaptive Thresholding (Otsu Binarization)
+                if not raw_data:
+                    try:
+                        from pyzbar import pyzbar
+                        _, thresh = cv2.threshold(gray, 128, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+                        barcodes = pyzbar.decode(thresh)
+                        if barcodes:
+                            b = barcodes[0]
+                            raw_data = b.data.decode("utf-8", errors="ignore").strip()
+                            barcode_type = b.type
+                            if b.polygon:
+                                points = np.array([(p.x, p.y) for p in b.polygon], np.int32)
+                            engine_used = "PyZbar (Lọc Ngưỡng Màn Hình)"
+                    except Exception:
+                        pass
+
+                # Stage 4: Native OpenCV Barcode Detector
+                if not raw_data:
+                    if not hasattr(self, 'opencv_barcode'):
+                        self.opencv_barcode = cv2.barcode.BarcodeDetector()
+                    try:
+                        ok, decoded_info, decoded_type, corners = self.opencv_barcode.detectAndDecode(frame)
+                        if ok and decoded_info:
+                            raw_data = decoded_info[0].strip()
+                            if decoded_type:
+                                barcode_type = str(decoded_type[0])
+                            if corners is not None and len(corners) > 0:
+                                points = np.array(corners[0], np.int32)
+                            engine_used = "OpenCV Barcode Engine"
+                    except Exception:
+                        pass
+
+                # Stage 5: Native OpenCV QRCode Detector
+                if not raw_data:
+                    if not hasattr(self, 'qr_detector'):
+                        self.qr_detector = cv2.QRCodeDetector()
+                    try:
+                        val, pts, _ = self.qr_detector.detectAndDecode(frame)
+                        if val:
+                            raw_data = val.strip()
+                            barcode_type = "QRCODE"
+                            if pts is not None:
+                                points = np.array(pts[0], np.int32)
+                            engine_used = "OpenCV QR Engine"
+                    except Exception:
+                        pass
+
+                # Stage 6: PyZbar on 90-degree Rotated Image (Fixes vertical phone orientation)
+                if not raw_data:
+                    try:
+                        from pyzbar import pyzbar
+                        rotated = cv2.rotate(gray, cv2.ROTATE_90_CLOCKWISE)
+                        barcodes = pyzbar.decode(rotated)
+                        if barcodes:
+                            b = barcodes[0]
+                            raw_data = b.data.decode("utf-8", errors="ignore").strip()
+                            barcode_type = b.type
+                            engine_used = "PyZbar (Xoay 90 Độ)"
+                    except Exception:
+                        pass
+
+                # Periodic Diagnostic Tracing Every 30 Frames (1 Second)
+                if self.frame_count % 30 == 0:
+                    h_f, w_f, _ = frame.shape
+                    logger.info(f"[CAM_TEST_TRACE] Frame #{self.frame_count} ({w_f}x{h_f}) | Detected: {raw_data or 'None'} | Engine: {engine_used or 'Scanning...'}")
+
+                # Draw Live Visual Barcode Bounding Box Tracking Overlay
+                if points is not None and len(points) > 0:
+                    cv2.polylines(frame, [points], True, (0, 255, 0), 4)
+                    x_min = int(np.min(points[:, 0]))
+                    y_min = int(np.min(points[:, 1]))
+                    if y_min > 35:
+                        cv2.rectangle(frame, (x_min, y_min - 35), (x_min + 350, y_min), (0, 165, 80), -1)
+                        cv2.putText(frame, f"TRACKING: {raw_data[:22]}", (x_min + 5, y_min - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+                # Process Successful Decode
+                if raw_data:
+                    barcode_info = barcode_parser.parse_barcode(raw_data)
+                    patient_id = barcode_info.get("patient_id", raw_data)
+                    
+                    logger.info(f"[CAM_TEST_SUCCESS] Frame #{self.frame_count} | Engine: {engine_used} | Raw: '{raw_data}' | Type: {barcode_type} | PatientID: '{patient_id}'")
+                    
+                    if raw_data not in self.detected_codes:
+                        self.detected_codes.add(raw_data)
+                        try:
+                            import winsound
+                            winsound.Beep(1200, 150)
+                        except Exception:
+                            pass
+                    
+                    self.lbl_status.setText(f"✅ ĐÃ QUÉT THÀNH CÔNG: MÃ [{patient_id}] ({barcode_type}) | Engine: {engine_used}")
+                    self.lbl_status.setStyleSheet("font-size: 13px; font-weight: bold; padding: 10px; background-color: #065f46; color: #6ee7b7; border-radius: 6px;")
+                    self.lbl_debug.setText(f"📊 DEBUG TRACKER: Khung #{self.frame_count} | Engine Vừa Bắt Nét: {engine_used} | Raw Data: {raw_data}")
+                else:
+                    h_f, w_f, _ = frame.shape
+                    self.lbl_debug.setText(f"📊 DEBUG TRACKER: Khung #{self.frame_count} ({w_f}x{h_f}) | Đang quét 6-Stage Multi-Engine (PyZbar + CLAHE + Threshold + 90deg + OpenCV Barcode)")
 
                 # Render video frame to Qt QLabel
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
