@@ -191,6 +191,39 @@ class CameraTestDialog(QDialog):
                     except Exception:
                         pass
 
+                # Stage 7: PyZbar on Unsharp Mask Sharpened Image (Fixes Blurry Focus)
+                if not raw_data:
+                    try:
+                        from pyzbar import pyzbar
+                        blur = cv2.GaussianBlur(gray, (0, 0), 3)
+                        sharpened = cv2.addWeighted(gray, 1.8, blur, -0.8, 0)
+                        barcodes = pyzbar.decode(sharpened)
+                        if barcodes:
+                            b = barcodes[0]
+                            raw_data = b.data.decode("utf-8", errors="ignore").strip()
+                            barcode_type = b.type
+                            if b.polygon:
+                                points = np.array([(p.x, p.y) for p in b.polygon], np.int32)
+                            engine_used = "PyZbar (Làm Sắc Nét Unsharp Mask)"
+                    except Exception:
+                        pass
+
+                # Stage 8: PyZbar on 1.8x Super-Resolution Scaled Up Image (Fixes Small/Far Barcodes)
+                if not raw_data:
+                    try:
+                        from pyzbar import pyzbar
+                        scaled = cv2.resize(gray, (0, 0), fx=1.8, fy=1.8, interpolation=cv2.INTER_CUBIC)
+                        barcodes = pyzbar.decode(scaled)
+                        if barcodes:
+                            b = barcodes[0]
+                            raw_data = b.data.decode("utf-8", errors="ignore").strip()
+                            barcode_type = b.type
+                            if b.polygon:
+                                points = np.array([(int(p.x / 1.8), int(p.y / 1.8)) for p in b.polygon], np.int32)
+                            engine_used = "PyZbar (Phóng Đại 1.8x Siêu Phân Giải)"
+                    except Exception:
+                        pass
+
                 # Periodic Diagnostic Tracing Every 30 Frames (1 Second)
                 if self.frame_count % 30 == 0:
                     h_f, w_f, _ = frame.shape
