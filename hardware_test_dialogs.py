@@ -76,8 +76,9 @@ class CameraTestDialog(QDialog):
             if not self.cap.isOpened():
                 self.cap = cv2.VideoCapture(self.camera_index)
             if self.cap.isOpened():
-                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+                self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
                 self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
                 self.timer.start(30)
             else:
