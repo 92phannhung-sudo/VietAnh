@@ -879,10 +879,17 @@ class MainWindow(QMainWindow):
 
     # ----------------- HARDWARE TEST LAUNCHERS -----------------
     def run_test_camera(self):
+        # Temporarily stop background camera thread to avoid OpenCV DirectShow device collision
+        if hasattr(self, 'camera_thread') and self.camera_thread is not None:
+            self.camera_thread.stop()
+            
         cam_idx = self.cfg_camera_select.currentData()
         if cam_idx is None:
             cam_idx = 0
         hardware_test_dialogs.test_camera(self, camera_index=cam_idx)
+        
+        # Resume background camera thread after test modal closes
+        self.start_camera_thread()
 
     def run_test_mic(self):
         # Stop background voice detector thread temporarily to prevent PyAudio stream lockup

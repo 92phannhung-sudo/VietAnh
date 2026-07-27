@@ -82,20 +82,25 @@ class CameraTestDialog(QDialog):
         if self.cap and self.cap.isOpened():
             ret, frame = self.cap.read()
             if ret:
-                # 1. Barcode / QR Parsing
-                barcode_info = barcode_parser.decode_barcode(frame)
-                if barcode_info:
-                    raw_data = barcode_info.get("raw_data", "")
-                    b_type = barcode_info.get("type", "UNKNOWN")
-                    if raw_data and raw_data not in self.detected_codes:
-                        self.detected_codes.add(raw_data)
-                        try:
-                            import winsound
-                            winsound.Beep(1200, 150)
-                        except Exception:
-                            pass
-                        self.lbl_status.setText(f"✅ ĐÃ QUÉT THÀNH CÔNG: [{raw_data}] ({b_type}) - TRẠNG THÁI: TỐT (OK)")
-                        self.lbl_status.setStyleSheet("font-size: 13px; font-weight: bold; padding: 10px; background-color: #065f46; color: #6ee7b7; border-radius: 6px;")
+                # 1. Barcode / QR Parsing using OpenCV QRCodeDetector
+                if not hasattr(self, 'qr_detector'):
+                    self.qr_detector = cv2.QRCodeDetector()
+                try:
+                    val, pts, _ = self.qr_detector.detectAndDecode(frame)
+                    if val:
+                        barcode_info = barcode_parser.parse_barcode(val)
+                        raw_data = barcode_info.get("raw_data", "")
+                        if raw_data and raw_data not in self.detected_codes:
+                            self.detected_codes.add(raw_data)
+                            try:
+                                import winsound
+                                winsound.Beep(1200, 150)
+                            except Exception:
+                                pass
+                            self.lbl_status.setText(f"✅ ĐÃ QUÉT THÀNH CÔNG MÃ BỆNH ÁN: [{raw_data}] - TRẠNG THÁI: TỐT (OK)")
+                            self.lbl_status.setStyleSheet("font-size: 13px; font-weight: bold; padding: 10px; background-color: #065f46; color: #6ee7b7; border-radius: 6px;")
+                except Exception as qr_err:
+                    pass
 
                 # Render video frame to Qt QLabel
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
