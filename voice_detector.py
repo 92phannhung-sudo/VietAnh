@@ -73,9 +73,7 @@ class VoiceDetectorThread(QThread):
                 self.pyaudio_stream = None
             except Exception:
                 pass
-        self.wait(400)
-        if self.isRunning():
-            self.terminate()
+        self.wait(1000)
 
     def download_model(self, dest_path):
         import config
@@ -246,7 +244,6 @@ class VoiceDetectorThread(QThread):
                                     logger.info(f"[VOICE_KEYWORD] Detected keyword in final result: '{kw}'")
                                     self.log_signal.emit(f"✅ [ĐÃ KHỚP LỆNH CHUẨN]: \"{kw.upper()}\"")
                                     self.keyword_signal.emit(kw)
-                                    self.capture_signal.emit()
                                     self.cooldown_active = True
                                     self.last_trigger_time = time.time()
                                     break
@@ -260,7 +257,6 @@ class VoiceDetectorThread(QThread):
                                         logger.info(f"[VOICE_KEYWORD] Detected keyword in partial result: '{kw}'")
                                         self.log_signal.emit(f"✅ [ĐÃ KHỚP LỆNH CHUẨN]: \"{kw.upper()}\"")
                                         self.keyword_signal.emit(kw)
-                                        self.capture_signal.emit()
                                         self.cooldown_active = True
                                         self.last_trigger_time = time.time()
                                         break

@@ -611,22 +611,105 @@ class COMPortTestDialog(QDialog):
         layout.addLayout(btn_layout)
 
     def run_com_ping(self):
-        QTimer.singleShot(600, self._perform_ping)
+        import threading
+        def worker():
+            import subprocess
+            try:
+                out = subprocess.check_output("powershell -Command \"Get-WmiObject Win32_SerialPort\"", shell=True, text=True)
+                if self.port_name.upper() in out or "COM" in out:
+                    msg = f"✅ CỔNG {self.port_name.upper()} ĐANG HOẠT ĐỘNG TỐT (OK)\nPhản hồi Ping Handshake Baudrate 9600 thành công."
+                else:
+                    msg = f"✅ CỔNG {self.port_name.upper()} SẴN SÀNG (OK)"
+            except Exception:
+                msg = f"✅ CỔNG {self.port_name.upper()} SẴN SÀNG (OK)"
+            
+            QTimer.singleShot(0, lambda: self._update_ui_status(msg))
+        
+        threading.Thread(target=worker, daemon=True).start()
 
-    def _perform_ping(self):
-        # Verify physical port presence
-        import subprocess
-        try:
-            out = subprocess.check_output("powershell -Command \"Get-WmiObject Win32_SerialPort\"", shell=True, text=True)
-            if self.port_name.upper() in out or "COM" in out:
-                self.lbl_status.setText(f"✅ CỔNG {self.port_name.upper()} ĐANG HOẠT ĐỘNG TỐT (OK)\nPhản hồi Ping Handshake Baudrate 9600 thành công.")
-                self.lbl_status.setStyleSheet("font-size: 13px; font-weight: bold; padding: 20px; background-color: #065f46; color: #6ee7b7; border-radius: 6px;")
-            else:
-                self.lbl_status.setText(f"✅ CỔNG {self.port_name.upper()} SẴN SÀNG (OK)")
-                self.lbl_status.setStyleSheet("font-size: 13px; font-weight: bold; padding: 20px; background-color: #065f46; color: #6ee7b7; border-radius: 6px;")
-        except Exception:
-            self.lbl_status.setText(f"✅ CỔNG {self.port_name.upper()} SẴN SÀNG (OK)")
-            self.lbl_status.setStyleSheet("font-size: 13px; font-weight: bold; padding: 20px; background-color: #065f46; color: #6ee7b7; border-radius: 6px;")
+    def _update_ui_status(self, msg):
+        self.lbl_status.setText(msg)
+        self.lbl_status.setStyleSheet("font-size: 13px; font-weight: bold; padding: 20px; background-color: #065f46; color: #6ee7b7; border-radius: 6px;")
+
+
+from pathlib import Path
+
+class ImagePreviewDialog(QDialog):
+    """Native PySide6 Embedded Patient Photo Preview Modal with Scale & Keyboard Navigation"""
+    def __init__(self, parent=None, photo_paths=None, current_index=0):
+        super().__init__(parent)
+        self.photo_paths = photo_paths or []
+        self.current_index = max(0, min(current_index, len(self.photo_paths) - 1)) if self.photo_paths else 0
+        self.setWindowTitle("🖼️ XEM ẢNH BỆNH ÁN CHI TIẾT")
+        self.resize(1024, 768)
+        self.setModal(True)
+        self.init_ui()
+        self.update_preview()
+
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        
+        self.lbl_image = QLabel("Đang tải ảnh...")
+        self.lbl_image.setAlignment(Qt.AlignCenter)
+        self.lbl_image.setStyleSheet("background-color: #020617; border: 1px solid #1e293b; border-radius: 8px;")
+        layout.addWidget(self.lbl_image, stretch=1)
+        
+        nav_layout = QHBoxLayout()
+        self.btn_prev = QPushButton("◀️ Ảnh Trước (Left)")
+        self.btn_prev.clicked.connect(self.prev_photo)
+        nav_layout.addWidget(self.btn_prev)
+        
+        self.lbl_counter = QLabel("0 / 0")
+        self.lbl_counter.setAlignment(Qt.AlignCenter)
+        self.lbl_counter.setStyleSheet("font-weight: bold; color: #38bdf8; font-size: 14px;")
+        nav_layout.addWidget(self.lbl_counter)
+        
+        self.btn_next = QPushButton("Ảnh Tiếp (Right) ▶️")
+        self.btn_next.clicked.connect(self.next_photo)
+        nav_layout.addWidget(self.btn_next)
+        
+        btn_close = QPushButton("Đóng (Esc)")
+        btn_close.setStyleSheet("background-color: #475569; color: white; padding: 6px 16px;")
+        btn_close.clicked.connect(self.accept)
+        nav_layout.addWidget(btn_close)
+        
+        layout.addLayout(nav_layout)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Left:
+            self.prev_photo()
+        elif event.key() == Qt.Key_Right:
+            self.next_photo()
+        elif event.key() == Qt.Key_Escape:
+            self.accept()
+        else:
+            super().keyPressEvent(event)
+
+    def prev_photo(self):
+        if self.current_index > 0:
+            self.current_index -= 1
+            self.update_preview()
+
+    def next_photo(self):
+        if self.current_index < len(self.photo_paths) - 1:
+            self.current_index += 1
+            self.update_preview()
+
+    def update_preview(self):
+        if not self.photo_paths or self.current_index >= len(self.photo_paths):
+            self.lbl_image.setText("Chưa có ảnh")
+            self.lbl_counter.setText("0 / 0")
+            return
+            
+        path = self.photo_paths[self.current_index]
+        if path and Path(path).exists():
+            pix = QPixmap(str(path))
+            scaled = pix.scaled(self.lbl_image.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.lbl_image.setPixmap(scaled)
+            self.lbl_counter.setText(f"{self.current_index + 1} / {len(self.photo_paths)} | {Path(path).name}")
+        else:
+            self.lbl_image.setText("Không tìm thấy file ảnh")
+            self.lbl_counter.setText(f"{self.current_index + 1} / {len(self.photo_paths)}")
 
 
 # Launcher Helper Functions
@@ -644,4 +727,8 @@ def test_pedal(parent=None, trigger_key="ALT"):
 
 def test_com_port(parent=None, port_name="COM1"):
     dlg = COMPortTestDialog(parent, port_name=port_name)
+    dlg.exec()
+
+def show_image_preview(parent=None, photo_paths=None, current_index=0):
+    dlg = ImagePreviewDialog(parent, photo_paths=photo_paths, current_index=current_index)
     dlg.exec()

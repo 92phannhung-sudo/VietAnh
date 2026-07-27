@@ -39,11 +39,21 @@ DEFAULT_CONFIG = {
     "camera_index": 0,
     "microphone_name": "default",
     "vosk_model_path": get_vosk_model_path(),
+    "working_dir": str(PHOTOS_DIR),
     "update_url": "http://192.168.1.100/updates/version.json",
     "enable_ota": False,  # Temporarily disabled for offline hospital setup
     "active_theme": "dark",
     "active_operator_id": "NV001"
 }
+
+def get_photos_dir():
+    try:
+        cfg = load_config()
+        w_dir = Path(cfg.get("working_dir", str(PHOTOS_DIR)))
+        w_dir.mkdir(parents=True, exist_ok=True)
+        return w_dir
+    except Exception:
+        return PHOTOS_DIR
 
 def load_config():
     if not CONFIG_FILE.exists():

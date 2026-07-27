@@ -111,12 +111,18 @@ class UpdateCheckerThread(QThread):
                 
             zip_path.unlink()
             
+            is_frozen = getattr(sys, 'frozen', False)
+            if is_frozen:
+                restart_cmd = f'start "" "{sys.executable}"'
+            else:
+                restart_cmd = f'start "" "{sys.executable}" "{Path(os.getcwd()) / "main.py"}"'
+
             # Write batch file to safely swap files after app closes
             bat_content = f"""@echo off
 timeout /t 2 /nobreak > nul
 xcopy /E /Y "{extract_dir}\\*" "{os.getcwd()}"
 rmdir /S /Q "{extract_dir}"
-start "" "{sys.executable}" "{Path(os.getcwd()) / 'main.py'}"
+{restart_cmd}
 del "%~f0"
 """
             bat_path = Path(os.getcwd()) / "updater.bat"

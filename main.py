@@ -153,7 +153,7 @@ class CameraThread(QThread):
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (34, 197, 94), 2
             )
             
-            qt_image = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
+            qt_image = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
             self.frame_signal.emit(qt_image)
 
             frame_counter += 1
@@ -167,14 +167,7 @@ class CameraThread(QThread):
 
     def stop(self):
         self._running = False
-        if self.cap and self.cap.isOpened():
-            try:
-                self.cap.release()
-            except Exception:
-                pass
-        self.wait(500)
-        if self.isRunning():
-            self.terminate()
+        self.wait(1000)
 
     def _scan_barcode(self, frame):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -202,7 +195,7 @@ class CameraThread(QThread):
 
     def _save_photo(self, frame, trigger_timestamp):
         try:
-            patient_dir = config.PHOTOS_DIR / self._active_patient_id
+            patient_dir = config.get_photos_dir() / self._active_patient_id
             patient_dir.mkdir(parents=True, exist_ok=True)
             
             idx = database.get_next_photo_index(self._active_patient_id)
@@ -368,40 +361,94 @@ class MainWindow(QMainWindow):
     def setup_ui(self):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        main_layout = QHBoxLayout(central_widget)
+        main_layout = QVBoxLayout(central_widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # ----------------- LEFT SIDEBAR NAVIGATION -----------------
-        sidebar_container = QWidget()
-        sidebar_container.setFixedWidth(220)
-        sidebar_layout = QVBoxLayout(sidebar_container)
-        sidebar_layout.setContentsMargins(0, 0, 0, 0)
-        sidebar_layout.setSpacing(0)
+        # ----------------- TOP HORIZONTAL NAVIGATION BAR -----------------
+        header_bar = QWidget()
+        header_bar.setObjectName("top_header_bar")
+        header_bar.setFixedHeight(55)
+        header_bar.setStyleSheet("""
+            QWidget#top_header_bar {
+                background-color: #0f172a;
+                border-bottom: 2px solid #1e293b;
+            }
+            QPushButton.nav_tab_btn {
+                background-color: transparent;
+                color: #94a3b8;
+                font-weight: bold;
+                font-size: 13px;
+                padding: 10px 16px;
+                border: none;
+                border-bottom: 3px solid transparent;
+                border-radius: 0px;
+            }
+            QPushButton.nav_tab_btn:hover {
+                color: #38bdf8;
+                background-color: #1e293b;
+            }
+            QPushButton.nav_tab_btn[active="true"] {
+                color: #38bdf8;
+                background-color: #1e293b;
+                border-bottom: 3px solid #38bdf8;
+            }
+        """)
         
-        self.sidebar = QListWidget()
-        self.sidebar.setObjectName("sidebar")
+        header_layout = QHBoxLayout(header_bar)
+        header_layout.setContentsMargins(15, 0, 15, 0)
+        header_layout.setSpacing(10)
         
-        item_tab1 = QListWidgetItem(" 📷  1. Chụp Ảnh")
-        item_tab2 = QListWidgetItem(" 📂  2. Tra Cứu")
-        item_tab3 = QListWidgetItem(" 👨‍⚕️  3. Nhân Viên")
-        item_tab4 = QListWidgetItem(" ⚙️  4. Cài Đặt")
+        # Logo & App Title
+        lbl_logo = QLabel("🏥 354 EMR WORKSTATION")
+        lbl_logo.setStyleSheet("font-weight: bold; font-size: 15px; color: #38bdf8;")
+        header_layout.addWidget(lbl_logo)
         
-        self.sidebar.addItem(item_tab1)
-        self.sidebar.addItem(item_tab2)
-        self.sidebar.addItem(item_tab3)
-        self.sidebar.addItem(item_tab4)
-        
-        self.sidebar.currentRowChanged.connect(self.switch_tab)
-        sidebar_layout.addWidget(self.sidebar)
+        header_layout.addSpacing(20)
 
-        # Dedicated Exit / Close App Button at bottom of sidebar
-        self.btn_exit_app = QPushButton("🚪  Thoát Ứng Dụng")
-        self.btn_exit_app.setStyleSheet("background-color: #dc2626; color: white; border-radius: 0px; padding: 14px; font-weight: bold; font-size: 14px;")
+        # Horizontal Tab Buttons (F1-F4)
+        self.nav_btns = []
+        tab_titles = [
+            ("F1 📷  1. Chụp Ảnh", 0),
+            ("F2 📂  2. Thư Mục Bệnh Án", 1),
+            ("F3 👨‍⚕️  3. Nhân Viên", 2),
+            ("F4 ⚙️  4. Cài Đặt", 3)
+        ]
+        
+        for text, idx in tab_titles:
+            btn = QPushButton(text)
+            btn.setProperty("class", "nav_tab_btn")
+            btn.setProperty("active", "false")
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda _, i=idx: self.switch_tab(i))
+            header_layout.addWidget(btn)
+            self.nav_btns.append(btn)
+            
+        header_layout.addStretch()
+
+        # Operator Selector in Top Header
+        op_box = QHBoxLayout()
+        op_lbl = QLabel("Người thao tác:")
+        op_lbl.setStyleSheet("color: #94a3b8; font-weight: bold; font-size: 12px;")
+        op_box.addWidget(op_lbl)
+        
+        self.cb_active_operator = QComboBox()
+        self.cb_active_operator.setMinimumWidth(180)
+        self.load_operator_dropdown()
+        self.cb_active_operator.currentIndexChanged.connect(self.on_operator_changed)
+        op_box.addWidget(self.cb_active_operator)
+        header_layout.addLayout(op_box)
+        
+        header_layout.addSpacing(15)
+
+        # Dedicated Exit / Close App Button in Top Header
+        self.btn_exit_app = QPushButton("Esc 🚪  Thoát")
+        self.btn_exit_app.setStyleSheet("background-color: #dc2626; color: white; border-radius: 4px; padding: 6px 14px; font-weight: bold; font-size: 12px;")
+        self.btn_exit_app.setCursor(Qt.PointingHandCursor)
         self.btn_exit_app.clicked.connect(self.confirm_exit_app)
-        sidebar_layout.addWidget(self.btn_exit_app)
+        header_layout.addWidget(self.btn_exit_app)
 
-        main_layout.addWidget(sidebar_container)
+        main_layout.addWidget(header_bar)
 
         # ----------------- STACKED WORKSPACE CONTAINER -----------------
         self.stack = QStackedWidget()
@@ -421,13 +468,19 @@ class MainWindow(QMainWindow):
         # Status Bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-        self.status_bar.showMessage(f"Phiên bản: {config.__version__} | Database: WAL Mode OK")
+        self.status_bar.showMessage(f"Phiên bản: {config.__version__} | Database: WAL Mode OK | [F1-F11]: Phím tắt nhanh")
         
         # Default select Tab 1
-        self.sidebar.setCurrentRow(0)
+        self.switch_tab(0)
 
     def switch_tab(self, index):
         self.stack.setCurrentIndex(index)
+        for idx, btn in enumerate(self.nav_btns):
+            is_active = "true" if idx == index else "false"
+            btn.setProperty("active", is_active)
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+            
         if index == 1:
             self.load_history_records()
         elif index == 2:
@@ -457,6 +510,11 @@ class MainWindow(QMainWindow):
         self.lbl_scan_status = QLabel("Vui lòng quét Mã Vạch (Barcode)...")
         self.lbl_scan_status.setStyleSheet("color: #fb7185; font-weight: bold; font-size: 14px;")
         top_banner.addWidget(self.lbl_scan_status)
+
+        btn_finish_patient = QPushButton("✅ Hoàn Thành Khám (Chờ BN mới)")
+        btn_finish_patient.setStyleSheet("background-color: #0d9488; color: white; padding: 4px 12px; font-weight: bold; font-size: 12px;")
+        btn_finish_patient.clicked.connect(self.reset_active_patient)
+        top_banner.addWidget(btn_finish_patient)
         
         layout.addLayout(top_banner)
 
@@ -564,34 +622,95 @@ class MainWindow(QMainWindow):
 
         return widget
 
-    # ----------------- TAB 2: PATIENT HISTORY & REPORTS -----------------
+    # ----------------- TAB 2: VISUAL 2-LEVEL PATIENT FOLDER EXPLORER -----------------
     def build_tab2_history(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(10)
 
-        # Search Bar
-        search_box = QHBoxLayout()
-        search_box.addWidget(QLabel("Tìm kiếm Bệnh án:"))
+        # Top Control Bar (Search + Breadcrumb + Action Buttons)
+        top_bar = QHBoxLayout()
+        
+        self.lbl_breadcrumb = QLabel("📁 Tất cả Thư mục Bệnh án")
+        self.lbl_breadcrumb.setStyleSheet("font-weight: bold; font-size: 15px; color: #38bdf8;")
+        top_bar.addWidget(self.lbl_breadcrumb)
+        
+        top_bar.addSpacing(15)
+
+        # Search box (Fuzzy Search by ID, Name, or QR)
         self.txt_search = QLineEdit()
-        self.txt_search.setPlaceholderText("Nhập Mã BA hoặc Tên bệnh nhân...")
+        self.txt_search.setPlaceholderText("🔍 Tìm gần đúng theo Mã BA, Tên hoặc quét Mã QR (Ctrl+F)...")
+        self.txt_search.setClearButtonEnabled(True)
         self.txt_search.textChanged.connect(self.load_history_records)
-        search_box.addWidget(self.txt_search)
+        top_bar.addWidget(self.txt_search, stretch=1)
         
-        self.btn_export_report = QPushButton("Xuất Báo Cáo PDF / In")
-        self.btn_export_report.clicked.connect(self.export_patient_report)
-        search_box.addWidget(self.btn_export_report)
-        
-        layout.addLayout(search_box)
+        top_bar.addSpacing(10)
 
-        # History Table
-        self.table_history = QTableWidget()
-        self.table_history.setColumnCount(6)
-        self.table_history.setHorizontalHeaderLabels(["Mã BA", "Họ và Tên", "Năm sinh", "Giới tính", "Ngày tạo", "Số ảnh"])
-        self.table_history.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.table_history.cellDoubleClicked.connect(self.on_history_item_clicked)
+        self.btn_back_folder = QPushButton("◀️ Quay lại Thư mục (Backspace)")
+        self.btn_back_folder.setStyleSheet("background-color: #334155; color: white; padding: 6px 12px; font-weight: bold; border-radius: 4px;")
+        self.btn_back_folder.setCursor(Qt.PointingHandCursor)
+        self.btn_back_folder.clicked.connect(self.show_level1_folders)
+        self.btn_back_folder.setVisible(False)
+        top_bar.addWidget(self.btn_back_folder)
+
+        self.btn_open_tab1 = QPushButton("📷 Mở ở Tab Chụp (F1)")
+        self.btn_open_tab1.setStyleSheet("background-color: #0284c7; color: white; padding: 6px 12px; font-weight: bold; border-radius: 4px;")
+        self.btn_open_tab1.setCursor(Qt.PointingHandCursor)
+        self.btn_open_tab1.clicked.connect(self.open_selected_folder_in_tab1)
+        self.btn_open_tab1.setVisible(False)
+        top_bar.addWidget(self.btn_open_tab1)
+
+        self.btn_export_report = QPushButton("📄 Xuất Báo Cáo (F10)")
+        self.btn_export_report.setStyleSheet("background-color: #0d9488; color: white; padding: 6px 12px; font-weight: bold; border-radius: 4px;")
+        self.btn_export_report.setCursor(Qt.PointingHandCursor)
+        self.btn_export_report.clicked.connect(self.export_patient_report)
+        top_bar.addWidget(self.btn_export_report)
         
-        layout.addWidget(self.table_history)
+        layout.addLayout(top_bar)
+
+        # Stacked Container for Level 1 vs Level 2
+        self.tab2_stack = QStackedWidget()
+        
+        # --- LEVEL 1 PAGE: VISUAL FOLDER CARDS GRID ---
+        self.level1_widget = QWidget()
+        level1_layout = QVBoxLayout(self.level1_widget)
+        level1_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.level1_scroll = QScrollArea()
+        self.level1_scroll.setWidgetResizable(True)
+        self.level1_scroll.setStyleSheet("QScrollArea { border: 1px solid #1e293b; background-color: #090d16; border-radius: 6px; }")
+        
+        self.level1_container = QWidget()
+        self.level1_grid = QGridLayout(self.level1_container)
+        self.level1_grid.setContentsMargins(15, 15, 15, 15)
+        self.level1_grid.setSpacing(15)
+        self.level1_scroll.setWidget(self.level1_container)
+        level1_layout.addWidget(self.level1_scroll)
+        
+        self.tab2_stack.addWidget(self.level1_widget)
+
+        # --- LEVEL 2 PAGE: DETAILED PATIENT PHOTO GALLERY ---
+        self.level2_widget = QWidget()
+        level2_layout = QVBoxLayout(self.level2_widget)
+        level2_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.level2_scroll = QScrollArea()
+        self.level2_scroll.setWidgetResizable(True)
+        self.level2_scroll.setStyleSheet("QScrollArea { border: 1px solid #1e293b; background-color: #090d16; border-radius: 6px; }")
+        
+        self.level2_container = QWidget()
+        self.level2_grid = QGridLayout(self.level2_container)
+        self.level2_grid.setContentsMargins(15, 15, 15, 15)
+        self.level2_grid.setSpacing(15)
+        self.level2_scroll.setWidget(self.level2_container)
+        level2_layout.addWidget(self.level2_scroll)
+        
+        self.tab2_stack.addWidget(self.level2_widget)
+
+        layout.addWidget(self.tab2_stack)
+        
+        self.selected_patient_folder_id = None
         return widget
 
     # ----------------- TAB 3: STAFF & AUDIT LOGS & ACTION MAPPINGS -----------------
@@ -717,6 +836,16 @@ class MainWindow(QMainWindow):
         self.cb_theme.currentIndexChanged.connect(self.on_theme_dropdown_changed)
         form.addRow("Chế độ màu Giao diện:", self.cb_theme)
         
+        # Working Directory Selection
+        self.txt_working_dir = QLineEdit(str(config.get_photos_dir()))
+        dir_row = QHBoxLayout()
+        dir_row.addWidget(self.txt_working_dir, stretch=1)
+        btn_browse_dir = QPushButton("📁 Chọn Thư Mục")
+        btn_browse_dir.setStyleSheet("background-color: #0284c7; color: white; padding: 4px 12px;")
+        btn_browse_dir.clicked.connect(self.browse_working_dir)
+        dir_row.addWidget(btn_browse_dir)
+        form.addRow("Thư mục lưu trữ Ảnh Bệnh án:", dir_row)
+
         # OTA Update Intranet URL
         self.txt_ota_url = QLineEdit(self.app_config.get("update_url", ""))
         form.addRow("Địa chỉ Cập nhật Intranet:", self.txt_ota_url)
@@ -830,31 +959,185 @@ class MainWindow(QMainWindow):
             self.load_staff_and_audit_data()
             self.load_operator_dropdown()
 
-    # ----------------- HISTORY & REPORT LOGIC -----------------
+    # ----------------- VISUAL 2-LEVEL FOLDER EXPLORER LOGIC -----------------
+    def show_level1_folders(self):
+        self.selected_patient_folder_id = None
+        self.lbl_breadcrumb.setText("📁 Tất cả Thư mục Bệnh án")
+        self.btn_back_folder.setVisible(False)
+        self.btn_open_tab1.setVisible(False)
+        self.tab2_stack.setCurrentIndex(0)
+        self.load_history_records()
+
+    def open_patient_folder(self, patient_id):
+        self.selected_patient_folder_id = patient_id
+        patient = database.get_patient(patient_id)
+        p_name = patient["name"] if patient and patient["name"] else "Chưa cập nhật"
+        
+        self.lbl_breadcrumb.setText(f"📁 Tất cả Thư mục > 📂 {patient_id} - {p_name}")
+        self.btn_back_folder.setVisible(True)
+        self.btn_open_tab1.setVisible(True)
+        
+        # Clear existing level 2 grid
+        while self.level2_grid.count():
+            item = self.level2_grid.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        photos = database.get_patient_photos(patient_id)
+        if not photos:
+            empty_lbl = QLabel(f"Thư mục bệnh nhân {patient_id} chưa có hình ảnh nào.")
+            empty_lbl.setAlignment(Qt.AlignCenter)
+            empty_lbl.setStyleSheet("color: #64748b; font-size: 14px; font-weight: bold; margin: 40px;")
+            self.level2_grid.addWidget(empty_lbl, 0, 0)
+        else:
+            cols = 4
+            all_paths = []
+            for photo in photos:
+                full_path = database.get_full_photo_path(photo["file_path"])
+                all_paths.append(full_path)
+
+            for idx, photo in enumerate(photos):
+                full_path = database.get_full_photo_path(photo["file_path"])
+                r = idx // cols
+                c = idx % cols
+                
+                # Card Widget for photo
+                card = QGroupBox()
+                card.setStyleSheet("""
+                    QGroupBox {
+                        background-color: #0f172a;
+                        border: 1px solid #1e293b;
+                        border-radius: 6px;
+                    }
+                    QGroupBox:hover {
+                        border: 1px solid #38bdf8;
+                    }
+                """)
+                card_layout = QVBoxLayout(card)
+                card_layout.setContentsMargins(8, 8, 8, 8)
+                
+                lbl_img = QLabel()
+                lbl_img.setFixedSize(200, 150)
+                lbl_img.setAlignment(Qt.AlignCenter)
+                lbl_img.setStyleSheet("background-color: #020617; border-radius: 4px;")
+                
+                pix = QPixmap(str(full_path))
+                if not pix.isNull():
+                    lbl_img.setPixmap(pix.scaled(200, 150, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                else:
+                    lbl_img.setText("📷 Không nạp được ảnh")
+                    
+                lbl_img.setCursor(Qt.PointingHandCursor)
+                lbl_img.mousePressEvent = lambda e, p_idx=idx: hardware_test_dialogs.show_image_preview(self, photo_paths=all_paths, current_index=p_idx)
+                card_layout.addWidget(lbl_img)
+                
+                lbl_info = QLabel(f"📄 Photo #{idx+1}\n⏱️ {photo.get('captured_at', '')}")
+                lbl_info.setStyleSheet("color: #94a3b8; font-size: 11px;")
+                card_layout.addWidget(lbl_info)
+                
+                self.level2_grid.addWidget(card, r, c)
+
+        self.tab2_stack.setCurrentIndex(1)
+
+    def open_selected_folder_in_tab1(self):
+        if self.selected_patient_folder_id:
+            self.handle_scanned_barcode(self.selected_patient_folder_id)
+            self.switch_tab(0)
+
     def load_history_records(self):
+        if self.tab2_stack.currentIndex() == 1 and self.selected_patient_folder_id:
+            self.open_patient_folder(self.selected_patient_folder_id)
+            return
+
         query = self.txt_search.text().strip().lower()
         conn = database.get_db_connection()
         cursor = conn.cursor()
         if query:
-            cursor.execute("SELECT * FROM patients WHERE LOWER(id) LIKE ? OR LOWER(name) LIKE ?", (f"%{query}%", f"%{query}%"))
+            cursor.execute("SELECT * FROM patients WHERE LOWER(id) LIKE ? OR LOWER(name) LIKE ? ORDER BY created_at DESC", (f"%{query}%", f"%{query}%"))
         else:
             cursor.execute("SELECT * FROM patients ORDER BY created_at DESC")
         rows = cursor.fetchall()
         conn.close()
-        
-        self.table_history.setRowCount(len(rows))
-        for r, p in enumerate(rows):
-            photos = database.get_patient_photos(p["id"])
-            self.table_history.setItem(r, 0, QTableWidgetItem(p["id"]))
-            self.table_history.setItem(r, 1, QTableWidgetItem(p["name"] or ""))
-            self.table_history.setItem(r, 2, QTableWidgetItem(str(p["birth_year"] or "")))
-            self.table_history.setItem(r, 3, QTableWidgetItem(p["gender"] or ""))
-            self.table_history.setItem(r, 4, QTableWidgetItem(p["created_at"]))
-            self.table_history.setItem(r, 5, QTableWidgetItem(f"{len(photos)} ảnh"))
+
+        # Clear Level 1 Grid
+        while self.level1_grid.count():
+            item = self.level1_grid.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not rows:
+            empty_lbl = QLabel("Không tìm thấy Thư mục Bệnh án nào khớp với từ khóa.")
+            empty_lbl.setAlignment(Qt.AlignCenter)
+            empty_lbl.setStyleSheet("color: #64748b; font-size: 14px; font-weight: bold; margin: 40px;")
+            self.level1_grid.addWidget(empty_lbl, 0, 0)
+            return
+
+        cols = 4
+        for idx, p in enumerate(rows):
+            p_id = p["id"]
+            p_name = p["name"] or "Chưa tên"
+            p_year = p["birth_year"] or ""
+            
+            photos = database.get_patient_photos(p_id)
+            photo_count = len(photos)
+            
+            # Find cover photo
+            cover_pix = None
+            if photos:
+                latest_photo_path = database.get_full_photo_path(photos[0]["file_path"])
+                pix = QPixmap(str(latest_photo_path))
+                if not pix.isNull():
+                    cover_pix = pix.scaled(200, 130, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+            r = idx // cols
+            c = idx % cols
+
+            # Create Folder Card Widget
+            card = QWidget()
+            card.setFixedSize(220, 210)
+            card.setStyleSheet("""
+                QWidget {
+                    background-color: #0f172a;
+                    border: 1px solid #1e293b;
+                    border-radius: 8px;
+                }
+                QWidget:hover {
+                    border: 1.5px solid #38bdf8;
+                    background-color: #1e293b;
+                }
+            """)
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(8, 8, 8, 8)
+            card_layout.setSpacing(4)
+
+            # Cover Thumbnail Image
+            lbl_cover = QLabel()
+            lbl_cover.setFixedSize(204, 120)
+            lbl_cover.setAlignment(Qt.AlignCenter)
+            lbl_cover.setStyleSheet("background-color: #020617; border-radius: 4px;")
+            if cover_pix:
+                lbl_cover.setPixmap(cover_pix)
+            else:
+                lbl_cover.setText("📁 Thư mục trống")
+                lbl_cover.setStyleSheet("background-color: #020617; color: #475569; font-weight: bold;")
+            card_layout.addWidget(lbl_cover)
+
+            # Header info
+            lbl_title = QLabel(f"📂 {p_id}")
+            lbl_title.setStyleSheet("font-weight: bold; font-size: 13px; color: #38bdf8;")
+            card_layout.addWidget(lbl_title)
+
+            lbl_sub = QLabel(f"{p_name} ({p_year}) | 🖼️ {photo_count} ảnh")
+            lbl_sub.setStyleSheet("color: #94a3b8; font-size: 11px;")
+            card_layout.addWidget(lbl_sub)
+
+            card.setCursor(Qt.PointingHandCursor)
+            card.mousePressEvent = lambda e, pid=p_id: self.open_patient_folder(pid)
+            
+            self.level1_grid.addWidget(card, r, c)
 
     def on_history_item_clicked(self, row, col):
-        patient_id = self.table_history.item(row, 0).text()
-        self.handle_scanned_barcode(patient_id)
+        pass
         self.sidebar.setCurrentRow(0)  # Jump to Tab 1
 
     def export_patient_report(self):
@@ -883,10 +1166,25 @@ class MainWindow(QMainWindow):
         theme_name = "dark" if idx == 0 else "light"
         self.apply_theme(theme_name)
 
+    def browse_working_dir(self):
+        cur_dir = str(config.get_photos_dir())
+        chosen_dir = QFileDialog.getExistingDirectory(self, "Chọn Thư Mục Lưu Trữ Ảnh Bệnh Án", cur_dir)
+        if chosen_dir:
+            self.txt_working_dir.setText(chosen_dir)
+
     def save_settings_cfg(self):
+        new_w_dir = self.txt_working_dir.text().strip()
+        if new_w_dir:
+            try:
+                Path(new_w_dir).mkdir(parents=True, exist_ok=True)
+                self.app_config["working_dir"] = new_w_dir
+            except Exception as e:
+                QMessageBox.warning(self, "Lỗi Thư Mục", f"Không thể tạo hoặc truy cập thư mục: {e}")
+                return
+                
         self.app_config["update_url"] = self.txt_ota_url.text().strip()
         config.save_config(self.app_config)
-        QMessageBox.information(self, "Cài Đặt", "Đã lưu cài đặt hệ thống.")
+        QMessageBox.information(self, "Cài Đặt", f"Đã lưu cài đặt hệ thống.\nThư mục làm việc: {self.app_config['working_dir']}")
 
     def scan_system_hardware(self):
         self.btn_scan_hw.setEnabled(False)
@@ -1012,17 +1310,8 @@ class MainWindow(QMainWindow):
                 self.attach_table_test_button(r, item.get("device_type", ""))
             self.lbl_hw_status.setText(f"Đã tải {len(cached)} phần cứng từ CSDL (Không cần quét lại).")
 
-    # ----------------- NATIVE QT KEYPRESS FALLBACK -----------------
     def keyPressEvent(self, event):
-        target_key_name = self.app_config.get("trigger_key", "f13").upper()
-        event_key_name = Qt.Key(event.key()).name.replace("Key_", "").upper()
-        if event_key_name == target_key_name:
-            logger.info(f"[QT_KEY_FALLBACK] Foot pedal keypress intercepted by Qt fallback: {event_key_name}")
-            if hasattr(self, 'pedal_fsm') and self.pedal_fsm is not None:
-                self.pedal_fsm.process_raw_key(target_key_name, "down")
-                self.pedal_fsm.process_raw_key(target_key_name, "up")
-        else:
-            super().keyPressEvent(event)
+        super().keyPressEvent(event)
 
     def start_camera_thread(self):
         self.camera_thread = CameraThread()
@@ -1133,10 +1422,9 @@ class MainWindow(QMainWindow):
             return
         photos = database.get_patient_photos(self.current_patient_id)
         if photos:
-            last_photo = photos[-1]
-            full_path = database.get_full_photo_path(last_photo["file_path"])
-            if full_path and full_path.exists():
-                os.startfile(str(full_path))
+            photo_paths = [str(database.get_full_photo_path(p["file_path"])) for p in photos if database.get_full_photo_path(p["file_path"])]
+            if photo_paths:
+                hardware_test_dialogs.show_image_preview(self, photo_paths=photo_paths, current_index=len(photo_paths)-1)
 
     @Slot(QImage)
     def update_camera_frame(self, image):
@@ -1255,9 +1543,10 @@ class MainWindow(QMainWindow):
             return
 
         photos = database.get_patient_photos(self.current_patient_id)
+        all_photo_paths = [str(database.get_full_photo_path(p["file_path"])) for p in photos if database.get_full_photo_path(p["file_path"])]
         
-        # Load Photo 1 into Split-screen Baseline View on the Right
-        if photos:
+        # Load Photo 1 into Split-screen Baseline View on the Right (if not custom set)
+        if photos and not hasattr(self, 'custom_baseline_path'):
             baseline_path = database.get_full_photo_path(photos[0]["file_path"])
             if baseline_path and baseline_path.exists():
                 pix = QPixmap(str(baseline_path))
@@ -1286,15 +1575,23 @@ class MainWindow(QMainWindow):
             item_layout.addWidget(lbl_title)
             
             photo_id = photo["id"]
+            photo_idx = idx
             
-            def make_context_menu(p_id, path):
+            def make_context_menu(p_id, path, current_idx):
                 def custom_context(pos):
                     menu = QMenu()
-                    open_act = menu.addAction("Mở ảnh đầy đủ")
-                    del_act = menu.addAction("Xóa ảnh này")
+                    open_act = menu.addAction("👁️ Xem ảnh phóng to")
+                    set_baseline_act = menu.addAction("📌 Đặt làm Ảnh đối chiếu đợt 1")
+                    del_act = menu.addAction("🗑️ Xóa ảnh này")
                     action = menu.exec_(lbl_thumb.mapToGlobal(pos))
                     if action == open_act:
-                        os.startfile(str(path))
+                        hardware_test_dialogs.show_image_preview(self, photo_paths=all_photo_paths, current_index=current_idx)
+                    elif action == set_baseline_act:
+                        if path and path.exists():
+                            pix = QPixmap(str(path))
+                            scaled = pix.scaled(self.lbl_baseline_photo.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                            self.lbl_baseline_photo.setPixmap(scaled)
+                            self.status_bar.showMessage(f"Đã đặt {path.name} làm ảnh đối chiếu góc đợt 1.", 4000)
                     elif action == del_act:
                         reply = QMessageBox.question(
                             self, "Xác nhận xóa", "Bạn có chắc chắn muốn xóa ảnh này?",
@@ -1306,8 +1603,8 @@ class MainWindow(QMainWindow):
                 return custom_context
 
             lbl_thumb.setContextMenuPolicy(Qt.CustomContextMenu)
-            lbl_thumb.customContextMenuRequested.connect(make_context_menu(photo_id, img_path))
-            lbl_thumb.mousePressEvent = lambda e, p=img_path: os.startfile(str(p)) if e.button() == Qt.LeftButton else None
+            lbl_thumb.customContextMenuRequested.connect(make_context_menu(photo_id, img_path, photo_idx))
+            lbl_thumb.mousePressEvent = lambda e, p_idx=photo_idx: hardware_test_dialogs.show_image_preview(self, photo_paths=all_photo_paths, current_index=p_idx) if e.button() == Qt.LeftButton else None
             
             self.grid_layout.addWidget(item_widget)
 
@@ -1374,6 +1671,59 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"⚠️ {err_msg}", 6000)
         if hasattr(self, 'lbl_voice_status'):
             self.lbl_voice_status.setText("Microphone: Tự động kết nối lại...")
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        modifiers = event.modifiers()
+        
+        # F1-F4: Switch Tabs
+        if key == Qt.Key_F1:
+            self.switch_tab(0)
+            return
+        elif key == Qt.Key_F2:
+            self.switch_tab(1)
+            return
+        elif key == Qt.Key_F3:
+            self.switch_tab(2)
+            return
+        elif key == Qt.Key_F4:
+            self.switch_tab(3)
+            return
+        elif key == Qt.Key_F5 or key == Qt.Key_Space:
+            self.trigger_photo_capture(source="HOTKEY_F5")
+            return
+        elif key == Qt.Key_F6 or key == Qt.Key_Delete:
+            self.delete_latest_photo()
+            return
+        elif key == Qt.Key_F7 or (modifiers == Qt.ControlModifier and key == Qt.Key_N):
+            self.reset_active_patient()
+            return
+        elif key == Qt.Key_F8 or (modifiers == Qt.ControlModifier and key == Qt.Key_O):
+            self.open_latest_photo_preview()
+            return
+        elif key == Qt.Key_F10 or (modifiers == Qt.ControlModifier and key == Qt.Key_P):
+            self.export_patient_report()
+            return
+        elif key == Qt.Key_F11:
+            if self.isFullScreen():
+                self.showNormal()
+            else:
+                self.showFullScreen()
+            return
+        elif modifiers == Qt.ControlModifier and key == Qt.Key_F:
+            self.switch_tab(1)
+            self.txt_search.setFocus()
+            self.txt_search.selectAll()
+            return
+        elif key == Qt.Key_Backspace:
+            if self.stack.currentIndex() == 1 and hasattr(self, 'tab2_stack') and self.tab2_stack.currentIndex() == 1:
+                self.show_level1_folders()
+                return
+        elif key == Qt.Key_Escape:
+            self.confirm_exit_app()
+            return
+
+        super().keyPressEvent(event)
 
     def confirm_exit_app(self):
         self.close()

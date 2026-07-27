@@ -132,6 +132,7 @@ def initialize_db():
         return False
 
 def log_audit_event(event_type, operator_name="", patient_id="", details=""):
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -141,35 +142,44 @@ def log_audit_event(event_type, operator_name="", patient_id="", details=""):
             (ts, event_type, operator_name, patient_id, details)
         )
         conn.commit()
-        conn.close()
         logger.info(f"[AUDIT_LOG] Event: {event_type} | Op: {operator_name} | Patient: {patient_id} | Details: {details}")
         return True
     except Exception as e:
         logger.error(f"[DB_ERROR] Error logging audit event: {str(e)}")
         return False
+    finally:
+        if conn:
+            conn.close()
 
 def get_full_photo_path(relative_path):
     if not relative_path:
         return None
-    return config.BASE_DIR / relative_path
+    p = Path(relative_path)
+    if p.is_absolute():
+        return p
+    return config.get_photos_dir().parent / relative_path
 
 def get_patient(patient_id):
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM patients WHERE id = ?", (patient_id,))
         row = cursor.fetchone()
-        conn.close()
         if row:
             return dict(row)
         return None
     except Exception as e:
         logger.error(f"[DB_ERROR] Error getting patient {patient_id}: {str(e)}")
         return None
+    finally:
+        if conn:
+            conn.close()
 
 def create_patient(patient_id, name="", birth_year=None, gender=""):
+    conn = None
     try:
-        patient_dir = config.PHOTOS_DIR / patient_id
+        patient_dir = config.get_photos_dir() / patient_id
         patient_dir.mkdir(parents=True, exist_ok=True)
         
         conn = get_db_connection()
@@ -181,17 +191,20 @@ def create_patient(patient_id, name="", birth_year=None, gender=""):
             (patient_id, name, birth_year, gender, created_at)
         )
         conn.commit()
-        conn.close()
         logger.info(f"[DB] Created new patient record: {patient_id}")
         return True
     except sqlite3.IntegrityError:
-        (config.PHOTOS_DIR / patient_id).mkdir(parents=True, exist_ok=True)
+        (config.get_photos_dir() / patient_id).mkdir(parents=True, exist_ok=True)
         return True
     except Exception as e:
         logger.error(f"[DB_ERROR] Error creating patient {patient_id}: {str(e)}")
         return False
+    finally:
+        if conn:
+            conn.close()
 
 def update_patient(patient_id, name, birth_year, gender):
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -200,14 +213,17 @@ def update_patient(patient_id, name, birth_year, gender):
             (name, birth_year, gender, patient_id)
         )
         conn.commit()
-        conn.close()
         logger.info(f"[DB] Updated patient info: {patient_id}")
         return True
     except Exception as e:
         logger.error(f"[DB_ERROR] Error updating patient {patient_id}: {str(e)}")
         return False
+    finally:
+        if conn:
+            conn.close()
 
 def add_photo(patient_id, relative_path, operator_id="", operator_name=""):
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -218,7 +234,6 @@ def add_photo(patient_id, relative_path, operator_id="", operator_name=""):
             (patient_id, operator_id, operator_name, relative_path, captured_at)
         )
         conn.commit()
-        conn.close()
         
         # Log to audit trail
         log_audit_event("PHOTO_CAPTURE", operator_name=operator_name, patient_id=patient_id, details=f"File: {relative_path}")
@@ -226,6 +241,9 @@ def add_photo(patient_id, relative_path, operator_id="", operator_name=""):
     except Exception as e:
         logger.error(f"[DB_ERROR] Error adding photo for {patient_id}: {str(e)}")
         return False
+    finally:
+        if conn:
+            conn.close()
 
 def delete_photo(photo_id, operator_name=""):
     try:
