@@ -9,12 +9,6 @@ Khả năng hệ thống lắng nghe và phản hồi đồng thời 3 kênh đi
 2. **Bàn đạp chân (USB Foot Pedal):** Động cơ FSM xử lý các thao tác giậm chân (1 giậm, giậm giữ long press).
 3. **Giọng nói tiếng Việt Offline (Offline Voice AI):** Luồng ASR nhận diện câu lệnh giọng nói tiếng Việt liên tục.
 
-### Patient History Grid Search (Tra Cứu & Tìm Kiếm Hồ Sơ Dạng Lưới)
-Chức năng tra cứu danh sách các hồ sơ bệnh án cũ của bệnh nhân:
-- **Kích hoạt:** Nút GUI *"🔍 F5 Tìm hồ sơ"*, phím `F5`, Giọng nói *"Tìm kiếm hồ sơ"* / *"Tra cứu bệnh nhân"*, hoặc Quét mã QR/Barcode phiếu ban đầu.
-- **Bộ lọc Optional (Filter Bar):** Nhập/nói tùy chọn theo 4 trường: *Mã hồ sơ/phiếu*, *Họ tên*, *Năm sinh*, *Giới tính*.
-- **Giao diện Kết quả:** Hiển thị dạng **Lưới (Grid View)** danh sách các hồ sơ cũ (kèm thumbnail ảnh Baseline mới nhất, ngày khám và số ảnh). Chọn hồ sơ sẽ tự động nạp thông tin và ảnh Baseline vào Cockpit.
-
 ### Standby QR & Input Mode (Chế độ Chờ Bắt Đầu Phiên Mới)
 Trạng thái hệ thống đứng chờ để nạp thông tin Bệnh nhân qua 3 hình thức:
 - Quét mã QR/Barcode (CCCD, BHYT, Phiếu khám HIS).
@@ -23,11 +17,17 @@ Trạng thái hệ thống đứng chờ để nạp thông tin Bệnh nhân qua
 - Tra cứu nhanh từ CSDL qua tính năng Tìm Kiếm Hồ Sơ Dạng Lưới (`F5`).
 Hệ thống bắt buộc phải kiểm duyệt hợp lệ (Validate) đầy đủ các trường dữ liệu trước khi chuyển sang chế độ chụp ảnh.
 
-### Clinical Capture Engine (Động cơ Chụp & So Sánh Lâm Sàng)
-Chế độ chụp rảnh tay với độ trễ < 150ms:
+### Patient History Grid Search (Tra Cứu & Tìm Kiếm Hồ Sơ Dạng Lưới)
+Chức năng tra cứu danh sách các hồ sơ bệnh án cũ của bệnh nhân:
+- **Kích hoạt:** Nút GUI *"🔍 F5 Tìm hồ sơ"*, phím `F5`, Giọng nói *"Tìm kiếm hồ sơ"* / *"Tra cứu bệnh nhân"*, hoặc Quét mã QR/Barcode phiếu ban đầu.
+- **Bộ lọc Optional (Filter Bar):** Nhập/nói tùy chọn theo 4 trường: *Mã hồ sơ/phiếu*, *Họ tên*, *Năm sinh*, *Giới tính*.
+- **Giao diện Kết quả:** Hiển thị dạng **Lưới (Grid View)** danh sách các hồ sơ cũ (kèm ngày khám và số ảnh). Chọn hồ sơ sẽ tự động nạp thông tin bệnh nhân vào Cockpit.
+
+### Widescreen Live Capture Engine (Động cơ Chụp Ảnh Live Stream Màn Hình Rộng 100%)
+Chế độ chụp rảnh tay tối đa hóa diện tích quan sát (Toàn bộ chiều rộng 100%):
 - **Kích hoạt Chụp:** 1 Giậm / Giọng nói *"Chụp ảnh"* / Phím `Space`. Chớp viền xanh nhạt + phát hiệu ứng âm thanh shutter.
-- **Lưu & Phim cuộn:** Lưu ngầm vào đĩa và đẩy ảnh mới lên thanh cuộn Filmstrip dưới cùng.
-- **So sánh Baseline:** Tự động hiển thị ảnh mới chụp song song với Ảnh Baseline cũ (nếu là bệnh nhân tái khám).
+- **Lưu & Phim cuộn:** Lưu ngầm vào đĩa (<150ms) và đẩy ảnh mới lên thanh cuộn Filmstrip dưới cùng.
+- **Diện tích tối đa:** Không sử dụng ô so sánh Baseline, toàn bộ màn hình trung tâm dành riêng cho Live Camera Stream 1080p siêu nét.
 
 ### Deletion & Trash Lifecycle (Luồng Xóa & Thùng Rác Tạm)
 - **Kích hoạt Xóa:** Giậm giữ bàn đạp (Long press) / Giọng nói *"Xóa ảnh"* / Phím `Delete`.
