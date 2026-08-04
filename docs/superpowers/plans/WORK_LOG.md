@@ -1,14 +1,17 @@
 # NHẬT KÝ HOẠT ĐỘNG DỰ ÁN (WORK LOG)
 *Cập nhật tự động bởi Agent - 354 EMR Workstation Redesign*
 
-## [2026-08-04] - Phiên Tinh Chỉnh Giao Diện theo Yêu Cầu (Giữ Ô Ảnh Baseline trên Màn hình 1)
-- **Trạng thái chung:** Hoàn thành giữ lại ô Ảnh Baseline so sánh song song trên Màn hình 1 (Unified Clinical Cockpit).
-- **Cấu trúc Màn hình 1:** Khung Live Stream Camera 60% (bên trái) + Ô So sánh Ảnh Baseline cũ 40% (bên phải) + Thanh cuộn Filmstrip dưới cùng.
+## [2026-08-04] - Phiên Rà Soát Tỉ Lệ UI/UX Desktop & Dọn Dẹp Figma Canvas
+- **Trạng thái chung:** Dọn dẹp hoàn toàn các khung giao diện cũ/lỗi trên Figma. Chuẩn hóa tỉ lệ UI/UX ứng dụng Desktop chuẩn QDarkTheme PySide6.
+- **Cơ cấu Giao diện Desktop Chuẩn:**
+  1. **Screen 1:** Unified Clinical Cockpit (Bảng điều khiển chính PySide6 QDarkTheme với tỉ lệ Input 38px, Split Live Feed 60% & Baseline Photo 40%).
+  2. **Screen 2:** Patient History Grid Search Modal (Thẻ kết quả dạng lưới 3 cột kèm thông tin và ngày khám cũ).
+  3. **Screen 3:** System Settings & Hardware Diagnostics Modal (Bảng kiểm chẩn 4 thiết bị phần cứng thực tế F4).
 
 ### 1. Các việc đã hoàn thành
-- [x] **CẬP NHẬT FIGMA CANVAS:** Đã vẽ trực tiếp Khung giao diện mới **`Screen 1: Unified Clinical Cockpit (WITH BASELINE)`** lên phần mềm Figma Desktop qua MCP Server.
-- [x] **CẬP NHẬT PYSIDE6:** Cập nhật `src/ui_clinical_cockpit.py` giữ lại ô so sánh Baseline và tự động cập nhật khi nạp hồ sơ bệnh nhân.
-- [x] **KIỂM THỬ TDD:** Chạy lại toàn bộ unit tests $\rightarrow$ **PASS 100% (3/3 tests)**.
+- [x] **DỌN DẸP FIGMA CANVAS:** Quét và xóa sạch 8 khung giao diện rác/tạm trên Figma. Chỉ giữ lại 3 màn hình Desktop UI/UX Promax đạt tỷ lệ tiêu chuẩn.
+- [x] **CHUẨN HÓA UI/UX DESKTOP (PYSIDE6 QDARKTHEME):** Áp dụng hệ bảng màu QDarkTheme (`#0F172A`, `#1E293B`, `#0284C7`, `#16A34A`, `#334155`, `#F8FAFC`).
+- [x] **KIỂM THỬ TDD:** Bộ unit test chạy hoàn toàn **PASS 100% (3/3 tests)**.
 
 ### 2. Nợ kỹ thuật phát sinh (Technical Debt)
 - [ ] `ponytail: optional auto-reconnect fallback for legacy Vosk grammar on non-standard micro input`
