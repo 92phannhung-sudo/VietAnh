@@ -31,6 +31,9 @@ import database
 import barcode_parser
 import action_registry
 import voice_detector
+from src.patient_search_service import PatientSearchService
+from src.multimodal_dispatcher import MultiModalDispatcher, ActionType
+from src.ui_clinical_cockpit import ClinicalCockpitWidget
 from pedal_gesture_fsm import PedalGestureFSM
 from voice_detector import VoiceDetectorThread
 from updater import UpdateCheckerThread
@@ -340,6 +343,9 @@ class MainWindow(QMainWindow):
         self.active_operator_id = self.app_config.get("active_operator_id", "NV001")
         self.active_operator_name = "BS. Nguyễn Văn A"
         self.keyboard_hotkey_registered = False
+
+        self.patient_search_service = PatientSearchService()
+        self.multimodal_dispatcher = MultiModalDispatcher()
 
         # Apply initial theme QSS
         self.apply_theme(self.app_config.get("active_theme", "dark"))
@@ -1674,24 +1680,9 @@ class MainWindow(QMainWindow):
 
     def keyPressEvent(self, event):
         key = event.key()
-        modifiers = event.modifiers()
-        
-        # F1-F4: Switch Tabs
-        if key == Qt.Key_F1:
-            self.switch_tab(0)
-            return
-        elif key == Qt.Key_F2:
-            self.switch_tab(1)
-            return
-        elif key == Qt.Key_F3:
-            self.switch_tab(2)
-            return
-        elif key == Qt.Key_F4:
-            self.switch_tab(3)
-            return
-        elif key == Qt.Key_F5 or key == Qt.Key_Space:
-            self.trigger_photo_capture(source="HOTKEY_F5")
-            return
+        if hasattr(self, 'multimodal_dispatcher') and self.multimodal_dispatcher:
+            self.multimodal_dispatcher.handle_key_event(key)
+        super().keyPressEvent(event)
         elif key == Qt.Key_F6 or key == Qt.Key_Delete:
             self.delete_latest_photo()
             return
