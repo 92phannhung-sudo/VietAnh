@@ -70,14 +70,32 @@ class ClinicalCockpitWidget(QWidget):
 
         main_layout.addWidget(self.banner)
 
-        # ---------------- 2. Main Center Widescreen Camera (100% Width - No Baseline) ----------------
+        # ---------------- 2. Main Center Split (60% Camera | 40% Baseline) ----------------
+        center_split = QHBoxLayout()
+
+        # Left Panel (Camera Stream 60%)
         self.camera_panel = QFrame()
         cam_layout = QVBoxLayout(self.camera_panel)
-        self.camera_label = QLabel("📷 WEBCAM LOGITECH C920e (1080p LIVE STREAM - MÀN HÌNH RỘNG 100%)\n\n[1 Giậm Bàn Đạp / Nói 'Chụp ảnh' / Space -> Lưu ngầm <150ms]\n[Giậm Giữ Bàn Đạp (Long Press) / Nói 'Xóa ảnh' -> Đưa vào Thùng Rác Tạm]")
+        self.camera_label = QLabel("📷 WEBCAM LOGITECH C920e (1080p LIVE STREAM)\n\n[1 Giậm Bàn Đạp / Nói 'Chụp ảnh' / Space -> Lưu ngầm <150ms]\n[Giậm Giữ Bàn Đạp (Long Press) / Nói 'Xóa ảnh' -> Đưa vào Thùng Rác Tạm]")
         self.camera_label.setAlignment(Qt.AlignCenter)
-        self.camera_label.setStyleSheet("background-color: #020617; border: 2px dashed #38bdf8; border-radius: 8px; color: #38bdf8; font-weight: bold; font-size: 14px;")
+        self.camera_label.setStyleSheet("background-color: #020617; border: 2px dashed #38bdf8; border-radius: 8px; color: #38bdf8; font-weight: bold; font-size: 13px;")
         cam_layout.addWidget(self.camera_label)
-        main_layout.addWidget(self.camera_panel, stretch=7)
+        center_split.addWidget(self.camera_panel, stretch=6)
+
+        # Right Panel (Baseline Photo Comparison 40%)
+        self.baseline_panel = QFrame()
+        base_layout = QVBoxLayout(self.baseline_panel)
+        self.baseline_title = QLabel("🔍 Ảnh Baseline (Khám trước)")
+        self.baseline_title.setStyleSheet("color: #f8fafc; font-weight: bold; font-size: 13px;")
+        base_layout.addWidget(self.baseline_title)
+
+        self.baseline_label = QLabel("[Chưa chọn Bệnh nhân / Chưa có ảnh Baseline]")
+        self.baseline_label.setAlignment(Qt.AlignCenter)
+        self.baseline_label.setStyleSheet("background-color: #1e293b; border-radius: 8px; color: #64748b;")
+        base_layout.addWidget(self.baseline_label)
+        center_split.addWidget(self.baseline_panel, stretch=4)
+
+        main_layout.addLayout(center_split, stretch=7)
 
         # ---------------- 3. Bottom Panel (Filmstrip Carousel & Actions) ----------------
         bottom_panel = QFrame()
@@ -127,6 +145,7 @@ class ClinicalCockpitWidget(QWidget):
         self.input_name.setText(patient_data.get("full_name", ""))
         self.input_birth.setText(patient_data.get("birth_year", ""))
         self.input_gender.setText(patient_data.get("gender", ""))
+        self.baseline_label.setText(f"[Ảnh Baseline BN: {patient_data.get('patient_id')}]")
         self.validate_inputs()
 
     def on_start_session(self):
@@ -142,6 +161,7 @@ class ClinicalCockpitWidget(QWidget):
         self.input_name.clear()
         self.input_birth.clear()
         self.input_gender.clear()
+        self.baseline_label.setText("[Chưa có ảnh Baseline]")
         for i in reversed(range(self.filmstrip_layout.count())):
             w = self.filmstrip_layout.itemAt(i).widget()
             if w:
