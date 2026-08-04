@@ -21,6 +21,7 @@ Màn hình làm việc chính được chia làm 4 khu vực chức năng chính
 | TOP BAR: [🏥 354 EMR] | 👤 Bác sĩ: BS. Nguyễn Văn A | 🦶 Pedal: OK | 🎙️ Voice: OK | 📷 Camera: 1080p |
 +---------------------------------------------------------------------------------------------------+
 | STANDBY / PATIENT BANNER: Mã BN: [__________] | Họ Tên: [__________] | Năm Sinh: [____] | Nam/Nữ  |
+| [🔍 F5 Tìm Hồ Sơ] [📁 Lịch Sử Khám]                                                              |
 +--------------------------------------------------+------------------------------------------------+
 | LEFT PANEL (60%): LIVE CAMERA STREAM 1080p       | RIGHT PANEL (40%): BASELINE COMPARISON PANEL   |
 |                                                  |                                                |
@@ -30,7 +31,7 @@ Màn hình làm việc chính được chia làm 4 khu vực chức năng chính
 |                                                  |                                                |
 +--------------------------------------------------+------------------------------------------------+
 | BOTTOM PANEL: FILMSTRIP THUMBNAIL CAROUSEL & ACTION TOOLBAR                                       |
-| [Ảnh #1]  [Ảnh #2]  [Ảnh #3]  | [F1 Tạo/Bắt đầu phiên mới]  [F2 Hoàn thành & Lưu]  [Delete Xóa]  |
+| [Ảnh #1]  [Ảnh #2]  [Ảnh #3]  | [F1 Tạo/Bắt đầu phiên]  [F5 Tìm hồ sơ]  [F2 Hoàn thành] [Delete Xóa]|
 +---------------------------------------------------------------------------------------------------+
 ```
 
@@ -43,6 +44,7 @@ Hệ thống duy trì đồng thời 3 kênh đầu vào lắng nghe ngầm trê
 | Thao tác Lâm sàng | ⌨️ Bàn Phím / Phím Tắt | 🦶 Bàn Đạp Chân (FSM) | 🎙️ Giọng Nói Offline (Vosk) |
 | :--- | :--- | :--- | :--- |
 | **Bắt đầu Phiên Mới** | `F1` | — | *"Tạo phiên làm việc mới"* / *"Bắt đầu phiên mới"* |
+| **Tìm Hồ Sơ Bệnh Nhân** | `F5` / `Ctrl + F` | — | *"Tìm kiếm hồ sơ"* / *"Tra cứu bệnh nhân"* |
 | **Chụp Ảnh** | `Phím Cách (Space)` | **1 Giậm** (Single Tap) | *"Chụp"* / *"Chụp ảnh"* |
 | **Xóa Ảnh Vừa Chụp** | `Delete` / `Backspace` | **Giậm Giữ 1.5s** (Long Press) | *"Xóa"* / *"Xóa ảnh"* |
 | **Hoàn thành / Lưu** | `F2` / `Ctrl + S` | — | *"Hoàn thành"* / *"Bệnh nhân tiếp"* |
@@ -51,10 +53,14 @@ Hệ thống duy trì đồng thời 3 kênh đầu vào lắng nghe ngầm trê
 
 ## 4. QUY TRÌNH NGHIỆP VỤ VÒNG ĐỜI PHIÊN KHÁM (END-TO-END WORKFLOW)
 
-### 🔵 BƯỚC 1: Chế độ Chờ & Kiểm duyệt Thông tin (Standby QR & Input Mode)
+### 🔵 BƯỚC 1: Chế độ Chờ, Tra Cứu Hồ Sơ & Kiểm duyệt (Standby, Search & Validation Mode)
 1. **Bắt đầu:** Bác sĩ bấm nút GUI / bấm `F1` / đọc lệnh *"Tạo phiên làm việc mới"*. Camera và hệ thống chuyển sang **Standby QR Scan Mode**.
-2. **Nạp dữ liệu 3 Kênh:**
+2. **Tra cứu & Nạp dữ liệu 4 Kênh:**
    - **Quét QR/Barcode:** Đưa thẻ BHYT / CCCD / Phiếu khám HIS trước camera $\rightarrow$ Tự động giải mã và điền 4 trường: *Mã hồ sơ/phiếu*, *Họ tên*, *Năm sinh*, *Giới tính*.
+   - **Tìm Kiếm Hồ Sơ Bệnh Nhân (Mới bổ sung):** Bấm phím **`F5`** (hoặc `Ctrl+F`), nút GUI **"Tìm hồ sơ"**, hoặc đọc giọng nói *"Tìm kiếm hồ sơ"* / *"Tra cứu bệnh nhân"*.
+     - Hộp thoại Tìm kiếm nhanh xuất hiện cho phép tìm theo Mã BN, Mã phiếu, Họ tên (hỗ trợ không dấu) hoặc Năm sinh.
+     - Hiển thị danh sách kết quả kèm số lần khám trước và thumbnail **Ảnh Baseline cũ mới nhất**.
+     - Chọn bệnh nhân $\rightarrow$ Tự động nạp toàn bộ thông tin BN + Ảnh Baseline cũ vào Cockpit và chuẩn bị sẵn sàng cho phiên chụp mới.
    - **Nhập bàn phím:** Nhập trực tiếp vào các ô dữ liệu.
    - **Nhập giọng nói (Voice Fill):** Nói câu hợp nhất (ví dụ: *"Bệnh nhân Nguyễn Văn A năm sinh 1987 nam mã phiếu 12345"*) $\rightarrow$ Động cơ AI Vosk trích xuất thực thể và tự động điền vào 4 ô.
 3. **Kiểm duyệt (Validation):** Hiển thị viền xanh lá (Valid) khi nhập đủ 4 trường.
@@ -78,7 +84,7 @@ Hệ thống duy trì đồng thời 3 kênh đầu vào lắng nghe ngầm trê
 
 ## 5. TỰ RÀ SOÁT VÀ XÁC NHẬN ĐẶC TẢ (SPEC SELF-REVIEW)
 
-- [x] **Placeholder Scan:** Đã xác định đầy đủ các trường, tham số và phím tắt chuẩn, không có TBD/TODO.
-- [x] **Tính nhất quán:** Luồng giao diện Cockpit và bộ phím/lệnh đa phương thức đã đồng bộ hoàn toàn với các tệp ADR và CONTEXT.
-- [x] **Phạm vi:** Đã khoanh vùng chính xác 3 bước lâm sàng khép kín cho 1 phiên làm việc bệnh nhân.
+- [x] **Placeholder Scan:** Đã xác định đầy đủ các trường, tham số và phím tắt chuẩn (`F1`, `F2`, `F5`, `Space`, `Delete`).
+- [x] **Tính nhất quán:** Luồng Tìm Kiếm Hồ Sơ (`F5`), giao diện Cockpit và bộ phím/lệnh đa phương thức đã đồng bộ hoàn toàn với tệp ADR và CONTEXT.
+- [x] **Phạm vi:** Đã khoanh vùng chính xác 3 bước lâm sàng khép kín có tích hợp Tìm kiếm & Tra cứu hồ sơ cũ.
 - [x] **Tính rõ ràng:** Các quy tắc Validation, thời gian trễ shutter (<150ms) và hành vi nút giậm giữ đã được mô tả tường minh.
