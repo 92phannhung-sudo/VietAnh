@@ -1,16 +1,57 @@
-import os
+"""
+Voice Detector Thread — sherpa-onnx Streaming ASR (Vietnamese Zipformer INT8)
+Replaces legacy Vosk engine with sherpa-onnx for better Vietnamese recognition
+and noise resistance. Cross-platform: Windows (WASAPI) + macOS (CoreAudio).
+"""
+
 import json
 import logging
 import math
 import struct
-import urllib.request
-import zipfile
+import time
 from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 
 logger = logging.getLogger("PatientApp")
 
+# ---------- Model path resolution ----------
+
+SHERPA_MODEL_DIR_NAME = "sherpa-onnx-zipformer-vi-30M-int8-2026-02-09"
+
+
+def _find_sherpa_model_dir() -> Path | None:
+    """Search for the sherpa-onnx model in standard locations."""
+    import sys
+    candidates = []
+
+    # 1. Bundled with app (PyInstaller frozen or dev)
+    if getattr(sys, 'frozen', False):
+        app_dir = Path(sys.executable).parent
+    else:
+        app_dir = Path(__file__).parent
+    candidates.append(app_dir / "models" / SHERPA_MODEL_DIR_NAME)
+    candidates.append(app_dir / SHERPA_MODEL_DIR_NAME)
+
+    # 2. %APPDATA% / user data
+    import os
+    appdata = os.getenv("APPDATA")
+    if appdata:
+        candidates.append(Path(appdata) / "PatientCaptureApp" / SHERPA_MODEL_DIR_NAME)
+
+    # 3. macOS ~/Library fallback
+    home = Path.home()
+    candidates.append(home / "Library" / "Application Support" / "PatientCaptureApp" / SHERPA_MODEL_DIR_NAME)
+
+    for p in candidates:
+        if p.exists() and (p / "tokens.txt").exists():
+            return p
+    return None
+
+
+# ---------- Microphone discovery (cross-platform) ----------
+
 def get_real_physical_microphones():
+    """Discover real input devices via QMediaDevices + PyAudio fallback."""
     raw_mics = []
     try:
         from PySide6.QtMultimedia import QMediaDevices
@@ -28,7 +69,6 @@ def get_real_physical_microphones():
             if dev.get("maxInputChannels", 0) > 0:
                 name = dev.get("name", "").strip()
                 if name and "Primary" not in name and "Mapper" not in name:
-                    # Exclude truncated duplicates of existing QMediaDevices names
                     already_covered = any(name in r or r in name for r in raw_mics)
                     if not already_covered:
                         raw_mics.append(name)
@@ -37,22 +77,38 @@ def get_real_physical_microphones():
         pass
     return raw_mics
 
+
 def get_available_microphones():
     mics = ["Mặc định hệ thống"]
-    raw_mics = get_real_physical_microphones()
-    for name in raw_mics:
+    for name in get_real_physical_microphones():
         if name not in mics:
             mics.append(name)
     return mics
 
+
+# ---------- Voice Detector Thread ----------
+
 class VoiceDetectorThread(QThread):
+    """Streaming ASR using sherpa-onnx Zipformer Vietnamese INT8 model."""
+
     capture_signal = Signal()
-    keyword_signal = Signal(str)  # Emits: 'chụp', 'xóa', 'tiếp', 'xem'
+    keyword_signal = Signal(str)   # Emits matched keyword: 'chụp', 'xóa', 'tiếp', etc.
     status_signal = Signal(str)
-    volume_signal = Signal(int)  # 0 to 100
-    log_signal = Signal(str)     # Emits live speech events and recognized text
+    volume_signal = Signal(int)    # 0-100
+    log_signal = Signal(str)
     error_signal = Signal(str)
-    download_progress = Signal(int) # 0 to 100
+    download_progress = Signal(int)
+
+    # Vietnamese clinical voice commands
+    KEYWORDS = [
+        "chụp", "chụp ảnh",
+        "xóa", "xóa ảnh",
+        "tiếp", "bệnh nhân tiếp",
+        "xem",
+        "tìm", "tìm kiếm", "tra cứu",
+        "bắt đầu", "tạo phiên", "bắt đầu phiên",
+        "hoàn thành",
+    ]
 
     def __init__(self, mic_name="default"):
         super().__init__()
@@ -65,220 +121,239 @@ class VoiceDetectorThread(QThread):
 
     def stop(self):
         self._stop = True
-        if self.pyaudio_stream:
-            try:
-                if self.pyaudio_stream.is_active():
-                    self.pyaudio_stream.stop_stream()
-                self.pyaudio_stream.close()
-                self.pyaudio_stream = None
-            except Exception:
-                pass
-        self.wait(1000)
+        self.cleanup_stream()
+        self.wait(1500)
 
-    def download_model(self, dest_path):
-        import config
-        app_config = config.load_config()
-        url = app_config.get("vosk_model_url", "http://192.168.1.100/models/vosk-model-small-vn-0.22.zip")
-        zip_path = Path(dest_path).parent / "model.zip"
-        
-        try:
-            self.status_signal.emit("Downloading Model from Intranet...")
-            
-            if url.startswith("http://") or url.startswith("https://"):
-                def report_hook(block_num, block_size, total_size):
-                    if total_size > 0:
-                        percent = int(block_num * block_size * 100 / total_size)
-                        self.download_progress.emit(min(100, percent))
-                
-                urllib.request.urlretrieve(url, zip_path, reporthook=report_hook)
-            else:
-                # Copy directly from local Intranet network share
-                import shutil
-                shutil.copy(url, zip_path)
-                self.download_progress.emit(100)
+    # ---------- sherpa-onnx recognizer factory ----------
 
-            self.status_signal.emit("Extracting Model...")
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(Path(dest_path).parent)
-            
-            if zip_path.exists():
-                zip_path.unlink()
-                
-            self.status_signal.emit("Model Installed")
-            return True
-        except Exception as e:
-            logger.error(f"Error downloading Vosk model: {str(e)}", exc_info=True)
-            self.error_signal.emit(f"Download failed: {str(e)}")
-            self.status_signal.emit("Model missing")
-            if zip_path.exists():
-                zip_path.unlink()
-            return False
+    def _create_recognizer(self, model_dir: Path):
+        """Create a sherpa_onnx.OnlineRecognizer from local Zipformer Transducer model."""
+        import sherpa_onnx
+
+        encoder = str(model_dir / "encoder.int8.onnx")
+        decoder = str(model_dir / "decoder.onnx")
+        joiner = str(model_dir / "joiner.int8.onnx")
+        tokens = str(model_dir / "tokens.txt")
+
+        recognizer = sherpa_onnx.OnlineRecognizer.from_transducer(
+            encoder=encoder,
+            decoder=decoder,
+            joiner=joiner,
+            tokens=tokens,
+            num_threads=2,
+            sample_rate=16000,
+            feature_dim=80,
+            enable_endpoint_detection=True,
+            rule1_min_trailing_silence=2.4,
+            rule2_min_trailing_silence=1.2,
+            rule3_min_utterance_length=20,
+            provider="cpu",
+        )
+        return recognizer
+
+    # ---------- Main thread loop ----------
 
     def run(self):
         self._stop = False
-        import config
-        app_config = config.load_config()
-        model_path = Path(app_config["vosk_model_path"])
-        
-        # Check and download model if missing
-        if not model_path.exists():
+
+        # 1. Find model
+        model_dir = _find_sherpa_model_dir()
+        if model_dir is None:
             self.status_signal.emit("Model missing")
+            self.error_signal.emit(f"Không tìm thấy thư mục model '{SHERPA_MODEL_DIR_NAME}' trong models/ hoặc %APPDATA%.")
+            logger.error(f"[VOICE] sherpa-onnx model directory not found: {SHERPA_MODEL_DIR_NAME}")
             return
 
+        # 2. Import dependencies
         try:
-            import vosk
+            import sherpa_onnx
             import pyaudio
         except ImportError as e:
-            logger.error(f"Required voice libs not imported: {str(e)}")
-            self.error_signal.emit(f"Library missing: {str(e)}")
+            logger.error(f"Required voice libs not imported: {e}")
+            self.error_signal.emit(f"Library missing: {e}")
             self.status_signal.emit("Error")
             return
 
+        # 3. Create recognizer
         try:
-            self.status_signal.emit("Initializing Voice Model...")
-            model = vosk.Model(str(model_path))
-            grammar_str = '["chụp", "chụp ảnh", "xóa", "xóa ảnh", "tiếp", "bệnh nhân tiếp", "xem", "tìm", "tìm kiếm", "tra cứu", "bắt đầu", "tạo phiên", "hoàn thành", "[unk]"]'
-            rec = vosk.KaldiRecognizer(model, 16000, grammar_str)
-            
-            import time
-            last_partial = ""
-            current_vol = 0
-            
-            while not self._stop:
+            self.status_signal.emit("Initializing sherpa-onnx...")
+            recognizer = self._create_recognizer(model_dir)
+            logger.info(f"[VOICE] sherpa-onnx recognizer created from {model_dir}")
+        except Exception as e:
+            logger.error(f"[VOICE] Failed to create sherpa-onnx recognizer: {e}", exc_info=True)
+            self.error_signal.emit(f"Model load error: {e}")
+            self.status_signal.emit("Error")
+            return
+
+        # 4. Main reconnect loop
+        current_vol = 0
+        while not self._stop:
+            try:
+                # Open mic
+                if not self.pyaudio_instance:
+                    self.pyaudio_instance = pyaudio.PyAudio()
+
+                device_index = self._resolve_mic_device()
+                if device_index is None:
+                    self.status_signal.emit("Không có Microphone")
+                    time.sleep(2.0)
+                    continue
+
                 try:
-                    if not self.pyaudio_instance:
-                        self.pyaudio_instance = pyaudio.PyAudio()
-                        
-                    # Select input device based on self.mic_name or config
-                    device_index = None
-                    mic_target = self.mic_name if (self.mic_name and self.mic_name != "default" and self.mic_name != "Mặc định hệ thống") else app_config.get("microphone_name", "default")
-                    
-                    if mic_target and mic_target != "default" and mic_target != "Mặc định hệ thống":
-                        for i in range(self.pyaudio_instance.get_device_count()):
-                            try:
-                                dev_info = self.pyaudio_instance.get_device_info_by_index(i)
-                                dev_n = dev_info.get("name", "")
-                                if dev_info.get("maxInputChannels", 0) > 0 and (mic_target in dev_n or dev_n in mic_target):
-                                    device_index = i
-                                    break
-                            except Exception:
-                                pass
-
-                    if device_index is None:
-                        try:
-                            default_dev = self.pyaudio_instance.get_default_input_device_info()
-                            device_index = default_dev.get("index")
-                        except Exception:
-                            for i in range(self.pyaudio_instance.get_device_count()):
-                                try:
-                                    dev_info = self.pyaudio_instance.get_device_info_by_index(i)
-                                    if dev_info.get("maxInputChannels", 0) > 0:
-                                        device_index = i
-                                        break
-                                except Exception:
-                                    pass
-
-                    if device_index is None:
-                        self.status_signal.emit("Không có Microphone")
-                        time.sleep(2.0)
-                        continue
-
-                    # Attempt stream opening
-                    try:
-                        self.pyaudio_stream = self.pyaudio_instance.open(
-                            format=pyaudio.paInt16,
-                            channels=1,
-                            rate=16000,
-                            input=True,
-                            input_device_index=device_index,
-                            frames_per_buffer=800
-                        )
-                        self.pyaudio_stream.start_stream()
-                        self.status_signal.emit("Listening")
-                        logger.info(f"Vosk voice detector started listening on device index {device_index}.")
-                    except Exception as open_err:
-                        logger.warning(f"[MIC_HOTPLUG] Cannot open mic device index {device_index}: {open_err}. Retrying in 2s...")
-                        self.cleanup_stream()
-                        time.sleep(2.0)
-                        continue
-
-                    # Stream reading loop
-                    while not self._stop:
-                        try:
-                            avail = self.pyaudio_stream.get_read_available()
-                            if avail < 800:
-                                time.sleep(0.01)
-                                if current_vol > 0:
-                                    current_vol = max(0, int(current_vol * 0.7))
-                                    self.volume_signal.emit(current_vol)
-                                continue
-                                
-                            data = self.pyaudio_stream.read(800, exception_on_overflow=False)
-                            if len(data) == 0:
-                                continue
-                        except Exception as read_err:
-                            logger.warning(f"[MIC_STREAM_LOST] Audio read error ({read_err}). Auto-reconnecting mic in 1.5s...")
-                            self.log_signal.emit("⚠️ [CẢNH BÁO]: Mất kết nối Microphone. Đang tự động kết nối lại...")
-                            time.sleep(1.5)
-                            break # Break inner loop to re-open stream and re-detect device
-                        
-                        # Calculate Volume RMS for visual feedback
-                        count = len(data) / 2
-                        format_str = f"{int(count)}h"
-                        shorts = struct.unpack(format_str, data)
-                        sum_squares = sum(s * s for s in shorts)
-                        rms = math.sqrt(sum_squares / count) if count > 0 else 0
-                        raw_vol = min(100, int((rms / 1200.0) * 100))
-                        current_vol = max(raw_vol, int(current_vol * 0.8))
-                        self.volume_signal.emit(current_vol)
-                        
-                        # Check recognizer
-                        keywords = ["chụp", "chụp ảnh", "xóa", "xóa ảnh", "tiếp", "bệnh nhân tiếp", "xem", "tìm", "tìm kiếm", "tra cứu", "bắt đầu", "tạo phiên", "hoàn thành"]
-                        if rec.AcceptWaveform(data):
-                            res = json.loads(rec.Result())
-                            text = res.get("text", "").lower().strip()
-                            if text:
-                                self.log_signal.emit(f"💬 [LỜI NÓI THỜI GIAN THẬT]: \"{text}\"")
-                            for kw in keywords:
-                                if kw in text and not self.cooldown_active:
-                                    logger.info(f"[VOICE_KEYWORD] Detected keyword in final result: '{kw}'")
-                                    self.log_signal.emit(f"✅ [ĐÃ KHỚP LỆNH CHUẨN]: \"{kw.upper()}\"")
-                                    self.keyword_signal.emit(kw)
-                                    self.cooldown_active = True
-                                    self.last_trigger_time = time.time()
-                                    break
-                        else:
-                            partial_res = json.loads(rec.PartialResult())
-                            partial_text = partial_res.get("partial", "").lower().strip()
-                            if partial_text and partial_text != last_partial:
-                                self.log_signal.emit(f"🎙️ [ĐANG LẮNG NGHE]: \"{partial_text}\"...")
-                                for kw in keywords:
-                                    if kw in partial_text and not self.cooldown_active:
-                                        logger.info(f"[VOICE_KEYWORD] Detected keyword in partial result: '{kw}'")
-                                        self.log_signal.emit(f"✅ [ĐÃ KHỚP LỆNH CHUẨN]: \"{kw.upper()}\"")
-                                        self.keyword_signal.emit(kw)
-                                        self.cooldown_active = True
-                                        self.last_trigger_time = time.time()
-                                        break
-                                last_partial = partial_text
-                        
-                        # Reset cooldown after 2.0 seconds
-                        if self.cooldown_active and (time.time() - self.last_trigger_time > 2.0):
-                            self.cooldown_active = False
-                            last_partial = ""
-
-                    self.cleanup_stream()
-
-                except Exception as loop_err:
-                    logger.warning(f"[MIC_AUTO_RECONNECT] Host error/device change ({loop_err}). Auto-reconnecting in 2.0s...")
+                    self.pyaudio_stream = self.pyaudio_instance.open(
+                        format=pyaudio.paInt16,
+                        channels=1,
+                        rate=16000,
+                        input=True,
+                        input_device_index=device_index,
+                        frames_per_buffer=800,
+                    )
+                    self.pyaudio_stream.start_stream()
+                    self.status_signal.emit("Listening (sherpa-onnx)")
+                    logger.info(f"[VOICE] Streaming ASR started on mic device {device_index}")
+                except Exception as open_err:
+                    logger.warning(f"[MIC_HOTPLUG] Cannot open mic {device_index}: {open_err}. Retrying 2s...")
                     self.cleanup_stream()
                     time.sleep(2.0)
-                    
-        except Exception as e:
-            logger.error(f"Error in voice detector thread: {str(e)}", exc_info=True)
-            self.status_signal.emit("Error")
-        finally:
-            self.cleanup()
+                    continue
+
+                # Create a new stream for this session
+                stream = recognizer.create_stream()
+
+                # 5. Read audio loop
+                while not self._stop:
+                    try:
+                        avail = self.pyaudio_stream.get_read_available()
+                        if avail < 800:
+                            time.sleep(0.01)
+                            if current_vol > 0:
+                                current_vol = max(0, int(current_vol * 0.7))
+                                self.volume_signal.emit(current_vol)
+                            continue
+
+                        data = self.pyaudio_stream.read(800, exception_on_overflow=False)
+                        if len(data) == 0:
+                            continue
+                    except Exception as read_err:
+                        logger.warning(f"[MIC_STREAM_LOST] {read_err}. Reconnecting 1.5s...")
+                        self.log_signal.emit("⚠️ [CẢNH BÁO]: Mất kết nối Microphone. Đang kết nối lại...")
+                        time.sleep(1.5)
+                        break
+
+                    # Volume meter
+                    count = len(data) // 2
+                    shorts = struct.unpack(f"{count}h", data)
+                    rms = math.sqrt(sum(s * s for s in shorts) / count) if count > 0 else 0
+                    raw_vol = min(100, int((rms / 1200.0) * 100))
+                    current_vol = max(raw_vol, int(current_vol * 0.8))
+                    self.volume_signal.emit(current_vol)
+
+                    # Feed audio to sherpa-onnx (expects float32 samples in [-1, 1])
+                    import numpy as np
+                    samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+                    stream.accept_waveform(16000, samples.tolist())
+
+                    while recognizer.is_ready(stream):
+                        recognizer.decode_stream(stream)
+
+                    text = recognizer.get_result(stream).text.strip().lower()
+
+                    if text:
+                        self.log_signal.emit(f"🎙️ [sherpa-onnx]: \"{text}\"")
+
+                    # Check endpoint (utterance boundary)
+                    if recognizer.is_endpoint(stream):
+                        if text:
+                            self.log_signal.emit(f"💬 [KẾT QUẢ]: \"{text}\"")
+                            self._match_keywords(text)
+                        # Reset stream for next utterance
+                        stream = recognizer.create_stream()
+
+                    # Cooldown reset
+                    if self.cooldown_active and (time.time() - self.last_trigger_time > 2.0):
+                        self.cooldown_active = False
+
+                self.cleanup_stream()
+
+            except Exception as loop_err:
+                logger.warning(f"[MIC_AUTO_RECONNECT] {loop_err}. Reconnecting 2s...")
+                self.cleanup_stream()
+                time.sleep(2.0)
+
+        self.cleanup()
+
+    # ---------- Keyword matching ----------
+
+    def _match_keywords(self, text: str):
+        """Match recognized text against Vietnamese command keywords."""
+        if self.cooldown_active:
+            return
+
+        # Try exact substring match (longest match first)
+        sorted_kw = sorted(self.KEYWORDS, key=len, reverse=True)
+        for kw in sorted_kw:
+            if kw in text:
+                logger.info(f"[VOICE_KEYWORD] Matched: '{kw}' in '{text}'")
+                self.log_signal.emit(f"✅ [ĐÃ KHỚP LỆNH]: \"{kw.upper()}\"")
+                self.keyword_signal.emit(kw)
+                self.cooldown_active = True
+                self.last_trigger_time = time.time()
+                return
+
+        # Optional: fuzzy match fallback (requires rapidfuzz)
+        try:
+            from rapidfuzz import fuzz
+            for kw in sorted_kw:
+                if fuzz.partial_ratio(kw, text) >= 75:
+                    logger.info(f"[VOICE_KEYWORD_FUZZY] Fuzzy matched: '{kw}' ~ '{text}'")
+                    self.log_signal.emit(f"✅ [KHỚP GẦN ĐÚNG]: \"{kw.upper()}\" (fuzzy)")
+                    self.keyword_signal.emit(kw)
+                    self.cooldown_active = True
+                    self.last_trigger_time = time.time()
+                    return
+        except ImportError:
+            pass  # rapidfuzz optional — exact match only
+
+    # ---------- Mic resolution ----------
+
+    def _resolve_mic_device(self) -> int | None:
+        """Resolve PyAudio device index from mic_name or config."""
+        if not self.pyaudio_instance:
+            return None
+
+        import config
+        app_config = config.load_config()
+        mic_target = self.mic_name if (self.mic_name and self.mic_name not in ("default", "Mặc định hệ thống")) else app_config.get("microphone_name", "default")
+
+        # Search by name
+        if mic_target and mic_target not in ("default", "Mặc định hệ thống"):
+            for i in range(self.pyaudio_instance.get_device_count()):
+                try:
+                    dev = self.pyaudio_instance.get_device_info_by_index(i)
+                    if dev.get("maxInputChannels", 0) > 0:
+                        dev_name = dev.get("name", "")
+                        if mic_target in dev_name or dev_name in mic_target:
+                            return i
+                except Exception:
+                    pass
+
+        # System default
+        try:
+            return self.pyaudio_instance.get_default_input_device_info().get("index")
+        except Exception:
+            pass
+
+        # First available
+        for i in range(self.pyaudio_instance.get_device_count()):
+            try:
+                dev = self.pyaudio_instance.get_device_info_by_index(i)
+                if dev.get("maxInputChannels", 0) > 0:
+                    return i
+            except Exception:
+                pass
+        return None
+
+    # ---------- Cleanup ----------
 
     def cleanup_stream(self):
         try:
