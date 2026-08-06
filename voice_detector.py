@@ -144,6 +144,7 @@ class VoiceDetectorThread(QThread):
     # Vietnamese clinical voice commands
     KEYWORDS = [
         "chụp", "chụp ảnh",
+        "xóa hết", "xóa tất cả",  # Must be before "xóa" for longest-match-first
         "xóa", "xóa ảnh",
         "tiếp", "bệnh nhân tiếp",
         "xem",

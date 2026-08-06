@@ -110,6 +110,10 @@ class CameraThread(QThread):
         self.last_barcode_data = ""
         logger.info("[BARCODE_SCAN] Enabled/Resumed barcode scanning for patient session.")
 
+    def pause_barcode_scanning(self):
+        self._pause_barcode_scan = True
+        logger.info("[BARCODE_SCAN] Paused barcode scanning (Standby mode).")
+
     def set_camera(self, index):
         if self.camera_index == index and self.isRunning():
             return
@@ -281,6 +285,17 @@ class CameraThread(QThread):
 
         h, w = frame.shape[:2]
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        # Stage 0: ZXing-CPP Engine (High-speed C++ engine for 1D Paper Barcodes & 2D QR Codes)
+        if not raw_data:
+            try:
+                import zxingcpp
+                zx_results = zxingcpp.read_barcodes(gray)
+                if zx_results and zx_results[0].text:
+                    raw_data = zx_results[0].text.strip()
+                    engine_used = f"ZXing-CPP ({zx_results[0].format.name})"
+            except Exception:
+                pass
 
         # Create 960x540 downscaled version for ultra-fast 15ms scanning on 1080p webcams
         if w > 1000:
@@ -679,6 +694,7 @@ class MainWindow(QMainWindow):
         # Wire cockpit signals to main app handlers
         self.cockpit_widget.capture_requested.connect(lambda: self.trigger_photo_capture(source="COCKPIT_CAPTURE"))
         self.cockpit_widget.delete_last_requested.connect(self.delete_latest_photo)
+        self.cockpit_widget.delete_all_requested.connect(self.delete_all_photos)
         self.cockpit_widget.complete_session_requested.connect(self.reset_active_patient)
         self.cockpit_widget.start_session_requested.connect(self._on_cockpit_start_session)
         self.cockpit_widget.patient_loaded.connect(self._on_cockpit_patient_loaded)
@@ -721,7 +737,10 @@ class MainWindow(QMainWindow):
             self.load_staff_and_audit_data()
 
     def _on_cockpit_start_session(self):
-        """Handle F1: Activate session if patient ID exists, or reset for new patient if empty."""
+        """Handle F1: Activate session for patient and enable barcode scanning."""
+        if hasattr(self, 'camera_thread') and self.camera_thread:
+            self.camera_thread.resume_barcode_scanning()
+
         p_id = ""
         if hasattr(self, 'cockpit_widget') and self.cockpit_widget:
             p_id = self.cockpit_widget.input_id.text().strip()
@@ -733,12 +752,9 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(f"🚀 [F1]: Phiên chụp ĐÃ KÍCH HOẠT cho Bệnh nhân: {p_id}", 5000)
             logger.info(f"[SESSION_F1] Activated session for patient: {p_id}")
         else:
-            if hasattr(self, 'cockpit_widget') and self.cockpit_widget:
-                self.cockpit_widget.reset_session()
             self.current_patient_id = None
             if hasattr(self, 'camera_thread') and self.camera_thread:
                 self.camera_thread.set_active_patient(None)
-                self.camera_thread.resume_barcode_scanning()
             self.load_patient_photos()
             self.status_bar.showMessage("🚀 [F1]: Mở phiên khám mới. Vui lòng quét mã QR hoặc nhập Mã BN...", 5000)
             logger.info("[SESSION_F1] Reset form and resumed barcode scan for new patient entry")
@@ -1770,14 +1786,31 @@ class MainWindow(QMainWindow):
             return
 
         logger.info(f"[VOICE_EVENT] Voice Keyword: '{keyword}' | Op: {self.active_operator_id}")
+
+        # Dispatch via multimodal_dispatcher FIRST — if it handles the keyword, stop here.
+        # This prevents double-dispatch (e.g. "xóa" deleting 2 photos).
         if hasattr(self, 'multimodal_dispatcher') and self.multimodal_dispatcher:
-            self.multimodal_dispatcher.handle_voice_command(keyword)
+            from src.multimodal_dispatcher import VOICE_MAP
+            text_lower = keyword.lower().strip()
+            matched_action = VOICE_MAP.get(text_lower)
+            if matched_action is None:
+                for kw, act in VOICE_MAP.items():
+                    if kw in text_lower:
+                        matched_action = act
+                        break
+            if matched_action is not None:
+                self.multimodal_dispatcher.handle_voice_command(keyword)
+                return  # Already dispatched — do NOT dispatch again below
+
+        # Fallback: dispatch via action_registry or hardcoded keyword handlers
         action_id = database.get_mapped_action(self.active_operator_id, "VOICE_KEYWORD", keyword)
         if action_id:
             action_registry.dispatch_action(action_id, self)
         else:
             if keyword in ["chụp", "chụp ảnh"]:
                 self.trigger_photo_capture(source="VOICE_CHỤP")
+            elif keyword in ["xóa hết", "xóa tất cả"]:
+                self.delete_all_photos()
             elif keyword in ["xóa", "xóa ảnh"]:
                 self.delete_latest_photo()
             elif keyword in ["tìm", "tìm kiếm", "tra cứu"]:
@@ -1797,13 +1830,33 @@ class MainWindow(QMainWindow):
             self.load_patient_photos()
             self.status_bar.showMessage(f"Đã xóa ảnh gần nhất: {os.path.basename(last_photo['file_path'])}", 4000)
 
+    def delete_all_photos(self):
+        """Delete ALL photos for the current patient session."""
+        if not self.current_patient_id:
+            self.status_bar.showMessage("Chưa chọn bệnh nhân để xóa ảnh.", 3000)
+            return
+        photos = database.get_patient_photos(self.current_patient_id)
+        if not photos:
+            self.status_bar.showMessage("Không có ảnh nào để xóa.", 3000)
+            return
+        count = len(photos)
+        print('\a')
+        for photo in photos:
+            database.delete_photo(photo["id"], operator_name=self.active_operator_name)
+        self.load_patient_photos()
+        logger.info(f"[DELETE_ALL] Deleted all {count} photos for patient {self.current_patient_id}")
+        self.status_bar.showMessage(f"🗑️ Đã xóa TẤT CẢ {count} ảnh của bệnh nhân {self.current_patient_id}", 5000)
+
     def reset_active_patient(self):
         print('\a')
         self.current_patient_id = None
         if hasattr(self, 'cockpit_widget') and self.cockpit_widget:
             self.cockpit_widget.reset_session()
         if hasattr(self, 'camera_thread') and self.camera_thread:
-            self.camera_thread.resume_barcode_scanning()
+            if hasattr(self, 'cockpit_widget') and self.cockpit_widget and self.cockpit_widget.is_session_open:
+                self.camera_thread.resume_barcode_scanning()
+            else:
+                self.camera_thread.pause_barcode_scanning()
         if hasattr(self, 'txt_patient_id'):
             self.txt_patient_id.clear()
         if hasattr(self, 'txt_patient_name'):

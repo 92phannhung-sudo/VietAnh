@@ -9,6 +9,7 @@ class ActionType(Enum):
     START_SESSION = "START_SESSION"
     CAPTURE = "CAPTURE"
     DELETE_LAST = "DELETE_LAST"
+    DELETE_ALL = "DELETE_ALL"
     SEARCH_GRID = "SEARCH_GRID"
     COMPLETE_SESSION = "COMPLETE_SESSION"
 
@@ -17,6 +18,8 @@ class ActionType(Enum):
 VOICE_MAP = {
     "chụp": ActionType.CAPTURE,
     "chụp ảnh": ActionType.CAPTURE,
+    "xóa hết": ActionType.DELETE_ALL,
+    "xóa tất cả": ActionType.DELETE_ALL,
     "xóa": ActionType.DELETE_LAST,
     "xóa ảnh": ActionType.DELETE_LAST,
     "tìm": ActionType.SEARCH_GRID,

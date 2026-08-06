@@ -14,6 +14,7 @@ class ClinicalCockpitWidget(QWidget):
     complete_session_requested = Signal()
     capture_requested = Signal()
     delete_last_requested = Signal()
+    delete_all_requested = Signal()
     patient_loaded = Signal(dict)
 
     def __init__(self, search_service: PatientSearchService, dispatcher: MultiModalDispatcher, parent=None):
@@ -323,3 +324,5 @@ class ClinicalCockpitWidget(QWidget):
             self.capture_requested.emit()
         elif action == ActionType.DELETE_LAST:
             self.delete_last_requested.emit()
+        elif action == ActionType.DELETE_ALL:
+            self.delete_all_requested.emit()

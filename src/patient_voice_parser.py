@@ -2,51 +2,107 @@ import re
 import datetime
 
 # ---------------------------------------------------------------------------
-# Vietnamese digit-word to number conversion
-# sherpa-onnx often outputs "một chín tám bảy" instead of "1987"
+# Vietnamese number-word to digit conversion
+# sherpa-onnx outputs numbers as words in two styles:
+#   Digit-by-digit: "một chín tám bảy" → 1987
+#   Formal:         "hai nghìn" → 2000, "một nghìn chín trăm chín mươi chín" → 1999
 # ---------------------------------------------------------------------------
 
 _VIET_DIGIT_MAP = {
-    "không": "0", "linh": "0", "lẻ": "0",
-    "một": "1", "mốt": "1",
-    "hai": "2",
-    "ba": "3",
-    "bốn": "4", "tư": "4",
-    "năm": "5", "lăm": "5",
-    "sáu": "6",
-    "bảy": "7", "bẩy": "7",
-    "tám": "8",
-    "chín": "9",
+    "không": 0, "linh": 0, "lẻ": 0,
+    "một": 1, "mốt": 1,
+    "hai": 2,
+    "ba": 3,
+    "bốn": 4, "tư": 4,
+    "năm": 5, "lăm": 5,
+    "sáu": 6,
+    "bảy": 7, "bẩy": 7,
+    "tám": 8,
+    "chín": 9,
 }
 
-# Words that are Vietnamese digits (used to detect number-word sequences)
-_VIET_DIGIT_WORDS = set(_VIET_DIGIT_MAP.keys())
+# Multiplier words
+_VIET_MULTIPLIERS = {
+    "nghìn": 1000, "ngàn": 1000,
+    "trăm": 100,
+    "mươi": 10, "mười": 10,
+}
+
+# All number-related words (for detection)
+_VIET_NUMBER_WORDS = set(_VIET_DIGIT_MAP.keys()) | set(_VIET_MULTIPLIERS.keys())
+_VIET_DIGIT_WORDS = set(_VIET_DIGIT_MAP.keys())  # digits only (for name rejection)
+
+
+def _parse_viet_number(words: list[str]) -> int | None:
+    """
+    Parse a sequence of Vietnamese number words into an integer.
+    Supports both styles:
+      Digit-by-digit: ["một", "chín", "tám", "bảy"] → 1987
+      Formal: ["hai", "nghìn"] → 2000
+      Formal: ["một", "nghìn", "chín", "trăm", "chín", "mươi", "chín"] → 1999
+    """
+    if not words:
+        return None
+
+    # Check if any multiplier words are present → use formal parsing
+    has_multiplier = any(w in _VIET_MULTIPLIERS for w in words)
+
+    if has_multiplier:
+        # Formal Vietnamese number: "hai nghìn" = 2000
+        total = 0
+        current = 0
+        for w in words:
+            if w in _VIET_DIGIT_MAP:
+                current = _VIET_DIGIT_MAP[w]
+            elif w in _VIET_MULTIPLIERS:
+                mult = _VIET_MULTIPLIERS[w]
+                if current == 0:
+                    current = 1  # "nghìn" alone means 1000
+                total += current * mult
+                current = 0
+            else:
+                return None  # Unknown word in sequence
+        total += current  # Add any trailing digit (e.g. "chín" at the end)
+        return total if total > 0 else None
+    else:
+        # Digit-by-digit: ["một", "chín", "chín"] → "199" → 199
+        digit_str = ""
+        for w in words:
+            if w in _VIET_DIGIT_MAP:
+                digit_str += str(_VIET_DIGIT_MAP[w])
+            else:
+                return None
+        return int(digit_str) if digit_str else None
 
 
 def _viet_words_to_digits(text: str) -> str:
     """
-    Convert Vietnamese number words to digit strings.
+    Convert Vietnamese number words to digit strings in text.
     Examples:
       "một chín tám bảy" → "1987"
-      "năm sinh một chín tám bảy" → "năm sinh 1987"
+      "năm sinh hai nghìn" → "năm sinh 2000"
+      "năm sinh một nghìn chín trăm chín mươi chín" → "năm sinh 1999"
       "tuổi ba lăm" → "tuổi 35"
-    Only converts sequences of 2+ consecutive digit words.
+    Only converts sequences of 2+ consecutive number words.
     """
     words = text.split()
     result = []
     i = 0
     while i < len(words):
-        # Check if current word is a digit word
-        if words[i] in _VIET_DIGIT_WORDS:
-            # Collect consecutive digit words
-            digit_str = ""
+        if words[i] in _VIET_NUMBER_WORDS:
+            # Collect consecutive number words
             j = i
-            while j < len(words) and words[j] in _VIET_DIGIT_WORDS:
-                digit_str += _VIET_DIGIT_MAP[words[j]]
+            num_words = []
+            while j < len(words) and words[j] in _VIET_NUMBER_WORDS:
+                num_words.append(words[j])
                 j += 1
-            # Only convert if 2+ consecutive digit words (avoid converting standalone "năm" etc.)
-            if j - i >= 2:
-                result.append(digit_str)
+            # Only convert if 2+ consecutive number words
+            if len(num_words) >= 2:
+                parsed = _parse_viet_number(num_words)
+                if parsed is not None:
+                    result.append(str(parsed))
+                else:
+                    result.extend(num_words)
                 i = j
             else:
                 result.append(words[i])
@@ -57,13 +113,37 @@ def _viet_words_to_digits(text: str) -> str:
     return " ".join(result)
 
 
+def _normalize_year(value: str) -> str | None:
+    """
+    Normalize a numeric string into a valid birth year.
+    Handles ASR truncation: sherpa-onnx sometimes drops the last digit word.
+      '1987' → '1987' (4 digits, valid)
+      '199'  → '1990' (3 digits, ASR truncated → pad with 0)
+      '200'  → '2000' (3 digits, ASR truncated → pad with 0)
+      '35'   → None   (too short for a year)
+    """
+    if not value or not value.isdigit():
+        return None
+    n = int(value)
+    current_year = datetime.datetime.now().year
+    # 4-digit year
+    if len(value) == 4 and 1900 <= n <= current_year:
+        return value
+    # 3-digit truncated year (ASR dropped last digit) → pad with 0
+    if len(value) == 3 and 190 <= n <= 202:
+        padded = n * 10
+        if 1900 <= padded <= current_year:
+            return str(padded)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # System control commands that should NEVER be parsed as patient names.
 # ---------------------------------------------------------------------------
 
 SYSTEM_COMMANDS = [
     "chụp", "chụp ảnh",
-    "xóa", "xóa ảnh",
+    "xóa", "xóa ảnh", "xóa hết", "xóa tất cả",
     "tiếp", "bệnh nhân tiếp", "tiếp theo", "chuyển bệnh nhân", "bệnh án tiếp",
     "xem", "xem lại",
     "tìm", "tìm kiếm", "tra cứu", "tra cứu bệnh nhân", "tìm kiếm hồ sơ",
@@ -71,7 +151,7 @@ SYSTEM_COMMANDS = [
     "hoàn thành", "kết thúc", "lưu", "lưu csdl",
     # Field-entry keywords spoken ALONE (without data after them)
     "họ và tên", "họ tên", "tên là", "tên",
-    "năm sinh", "sinh năm", "sinh",
+    "năm sinh", "sinh năm", "sinh", "nam sinh",
     "giới tính",
     "tuổi",
     "mã", "mã bệnh nhân", "mã số",
@@ -84,8 +164,8 @@ SYSTEM_COMMANDS = [
 _FIELD_PATTERNS = [
     # "Họ và tên <name>" or "Họ tên <name>" or "Tên là <name>" or "Tên <name>"
     (r'(?:họ\s+và\s+tên|họ\s+tên|tên\s+là|tên)\s+(.+)', "full_name"),
-    # "Năm sinh <year>" or "Sinh năm <year>" or "Sinh <year>"
-    (r'(?:năm\s+sinh|sinh\s+năm|sinh)\s+(\d{4})', "birth_year"),
+    # "Năm sinh <year>" or "Sinh năm <year>" or "Nam sinh <year>"
+    (r'(?:năm\s+sinh|sinh\s+năm|nam\s+sinh|sinh)\s+(\d{3,4})', "birth_year"),
     # "Tuổi <age>" or "<N> tuổi"
     (r'(?:tuổi)\s+(\d{1,3})', "age"),
     (r'(\d{1,3})\s+tuổi', "age"),
@@ -159,9 +239,9 @@ def _try_single_field(text: str) -> dict | None:
                 result["full_name"] = name
 
             elif field_key == "birth_year":
-                year = int(value)
-                if 1900 <= year <= datetime.datetime.now().year:
-                    result["birth_year"] = str(year)
+                normalized = _normalize_year(value)
+                if normalized:
+                    result["birth_year"] = normalized
                 else:
                     continue
 
@@ -250,10 +330,12 @@ def parse_patient_speech(text: str) -> dict | None:
     current_year = datetime.datetime.now().year
     birth_year = ""
 
-    year_match = re.search(r'\b(19\d{2}|20[0-2]\d)\b', lowered)
+    year_match = re.search(r'\b(\d{3,4})\b', lowered)
     if year_match:
-        birth_year = year_match.group(1)
-    else:
+        normalized = _normalize_year(year_match.group(1))
+        if normalized:
+            birth_year = normalized
+    if not birth_year:
         age_match = re.search(r'(\d{1,3})\s*tuổi', lowered)
         if age_match:
             age = int(age_match.group(1))
@@ -330,6 +412,7 @@ _PENDING_FIELD_MAP = {
     "tên là": "full_name",
     "tên": "full_name",
     "năm sinh": "birth_year",
+    "nam sinh": "birth_year",
     "sinh năm": "birth_year",
     "giới tính": "gender",
     "tuổi": "age",
@@ -373,21 +456,18 @@ def fill_pending_field(field: str, text: str) -> dict | None:
         return result
 
     elif field == "birth_year":
-        # Try digit match
-        m = re.search(r'\b(\d{4})\b', lowered)
+        # Try year match (3-4 digits)
+        m = re.search(r'\b(\d{3,4})\b', lowered)
         if m:
-            year = int(m.group(1))
-            if 1900 <= year <= datetime.datetime.now().year:
-                result["birth_year"] = str(year)
+            normalized = _normalize_year(m.group(1))
+            if normalized:
+                result["birth_year"] = normalized
                 return result
-        # Try age
-        m = re.search(r'\b(\d{1,3})\b', lowered)
+        # Try age (1-2 digits)
+        m = re.search(r'\b(\d{1,2})\b', lowered)
         if m:
             val = int(m.group(1))
-            if 1900 <= val <= datetime.datetime.now().year:
-                result["birth_year"] = str(val)
-                return result
-            elif 0 < val <= 120:
+            if 0 < val <= 120:
                 result["birth_year"] = str(datetime.datetime.now().year - val)
                 return result
         return None
