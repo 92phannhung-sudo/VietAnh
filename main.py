@@ -1748,11 +1748,17 @@ class MainWindow(QMainWindow):
     def reset_active_patient(self):
         print('\a')
         self.current_patient_id = None
-        self.txt_patient_id.clear()
-        self.txt_patient_name.clear()
-        self.txt_birth_year.clear()
-        self.lbl_scan_status.setText("SẴN SÀNG BỆNH NHÂN MỚI. Vui lòng quét mã...")
-        self.lbl_scan_status.setStyleSheet("color: #38bdf8; font-weight: bold; font-size: 14px;")
+        if hasattr(self, 'cockpit_widget') and self.cockpit_widget:
+            self.cockpit_widget.reset_session()
+        if hasattr(self, 'txt_patient_id'):
+            self.txt_patient_id.clear()
+        if hasattr(self, 'txt_patient_name'):
+            self.txt_patient_name.clear()
+        if hasattr(self, 'txt_birth_year'):
+            self.txt_birth_year.clear()
+        if hasattr(self, 'lbl_scan_status'):
+            self.lbl_scan_status.setText("SẴN SÀNG BỆNH NHÂN MỚI. Vui lòng quét mã...")
+            self.lbl_scan_status.setStyleSheet("color: #38bdf8; font-weight: bold; font-size: 14px;")
         self.load_patient_photos()
         self.status_bar.showMessage("Đã hoàn tất phiên khám. Sẵn sàng chờ bệnh nhân mới.", 4000)
 
@@ -1839,32 +1845,41 @@ class MainWindow(QMainWindow):
         parsed = barcode_parser.parse_barcode(barcode_data)
         patient_id = parsed["patient_id"]
         
-        self.lbl_scan_status.setText(f"✅ ĐÃ QUÉT MÃ BỆNH NHÂN: {patient_id} (ĐÃ MỞ PHIÊN KHÁM MỚI)")
-        self.lbl_scan_status.setStyleSheet("color: #22c55e; font-weight: bold; font-size: 14px; padding: 4px; background-color: #052e16; border-radius: 4px;")
-        
-        self.txt_patient_id.setText(patient_id)
         self.current_patient_id = patient_id
         self.camera_thread.set_active_patient(patient_id)
         
         patient = database.get_patient(patient_id)
         if patient:
-            self.txt_patient_name.setText(patient.get("name", ""))
-            self.txt_birth_year.setText(str(patient.get("birth_year") or ""))
+            name = patient.get("name", "")
+            dob = str(patient.get("birth_year") or "")
             gender = patient.get("gender", "Nam")
-            idx = self.txt_gender.findText(gender)
-            if idx >= 0:
-                self.txt_gender.setCurrentIndex(idx)
         else:
             name = parsed.get("name", "")
-            dob = parsed.get("birth_year")
+            dob = parsed.get("birth_year") or ""
             gender = parsed.get("gender", "Nam")
-            
             database.create_patient(patient_id, name=name, birth_year=dob, gender=gender)
+            
+        patient_data = {
+            "patient_id": patient_id,
+            "full_name": name,
+            "birth_year": str(dob) if dob else "",
+            "gender": gender
+        }
+        
+        # Populate new ClinicalCockpitWidget banner fields and enable Start Session
+        if hasattr(self, 'cockpit_widget') and self.cockpit_widget:
+            self.cockpit_widget.load_patient(patient_data)
+            
+        # Legacy fallback if widgets exist
+        if hasattr(self, 'lbl_scan_status'):
+            self.lbl_scan_status.setText(f"✅ ĐÃ QUÉT MÃ BỆNH NHÂN: {patient_id} (ĐÃ MỞ PHIÊN KHÁM MỚI)")
+            self.lbl_scan_status.setStyleSheet("color: #22c55e; font-weight: bold; font-size: 14px; padding: 4px; background-color: #052e16; border-radius: 4px;")
+        if hasattr(self, 'txt_patient_id'):
+            self.txt_patient_id.setText(patient_id)
+        if hasattr(self, 'txt_patient_name'):
             self.txt_patient_name.setText(name)
+        if hasattr(self, 'txt_birth_year'):
             self.txt_birth_year.setText(str(dob) if dob else "")
-            idx = self.txt_gender.findText(gender)
-            if idx >= 0:
-                self.txt_gender.setCurrentIndex(idx)
             
         database.log_audit_event("BARCODE_SCAN", operator_name=self.active_operator_name, patient_id=patient_id)
         self.load_patient_photos()

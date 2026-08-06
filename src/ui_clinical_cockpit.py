@@ -61,9 +61,10 @@ class ClinicalCockpitWidget(QWidget):
 
         self.btn_start = QPushButton("🚀 F1 Bắt đầu phiên")
         self.btn_start.setCursor(Qt.PointingHandCursor)
-        self.btn_start.setEnabled(False)
+        self.btn_start.setEnabled(True)
         self.btn_start.setStyleSheet("""
             QPushButton { background-color: #15803d; color: white; font-weight: bold; padding: 6px 16px; border-radius: 4px; }
+            QPushButton:hover { background-color: #16a34a; }
             QPushButton:disabled { background-color: #334155; color: #64748b; }
         """)
         self.btn_start.clicked.connect(self.on_start_session)
@@ -131,8 +132,8 @@ class ClinicalCockpitWidget(QWidget):
             bool(self.input_birth.text().strip()) and
             bool(self.input_gender.text().strip())
         )
-        self.btn_start.setEnabled(valid)
-        border_color = "#22c55e" if valid else "#ef4444"
+        self.btn_start.setEnabled(True)
+        border_color = "#22c55e" if valid else "#0284c7"
         self.banner.setStyleSheet(f"background-color: #0f172a; border: 1.5px solid {border_color}; border-radius: 8px; padding: 6px;")
 
     def open_search_grid(self):
@@ -151,6 +152,8 @@ class ClinicalCockpitWidget(QWidget):
         self.patient_loaded.emit(patient_data)
 
     def on_start_session(self):
+        self.input_id.setFocus()
+        self.input_id.selectAll()
         self.start_session_requested.emit()
 
     def on_complete_session(self):
@@ -174,7 +177,7 @@ class ClinicalCockpitWidget(QWidget):
         self.dispatcher.action_triggered.connect(self.on_action_triggered)
 
     def on_action_triggered(self, action: ActionType):
-        if action == ActionType.START_SESSION and self.btn_start.isEnabled():
+        if action == ActionType.START_SESSION:
             self.on_start_session()
         elif action == ActionType.SEARCH_GRID:
             self.open_search_grid()
