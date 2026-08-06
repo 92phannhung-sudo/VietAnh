@@ -30,18 +30,19 @@ graph TD
 
 ## 2. ĐẶC TẢ TÍNH NĂNG CỐT LÕI (CORE FUNCTIONAL SPECIFICATIONS)
 
-### 2.1 Quét & Giải Mã Mã Vạch / QR Code (Multi-Engine Barcode Engine)
+### 2.1 Quét & Giải Mã Mã Vạch / QR Code (Multi-Engine & Async OCR Pipeline)
 - **Chuẩn mã vạch hỗ trợ**: JSON QR, URL QR (`https://his...?id=BN123`), Chuỗi phân tách (`BN123|Nguyễn Văn A|1952|Nam`), Code 128, Code 39, QR Code tiêu chuẩn.
-- **Thuật toán xử lý ảnh 8 cấp độ (8-Stage Multi-Engine)**:
-  1. PyZbar Grayscale gốc.
-  2. PyZbar + Lọc tương phản CLAHE (Khử bóng chói màn hình điện thoại/giấy bóng).
-  3. PyZbar + Ngưỡng binarization Otsu.
-  4. OpenCV Barcode Detector.
-  5. OpenCV QR Code Detector.
-  6. PyZbar + Xoay ảnh 90 độ (Xử lý mã dọc).
-  7. PyZbar + Unsharp Mask (Xử lý mờ nét).
-  8. PyZbar + Siêu phân giải Super-Resolution 1.8x (Xử lý mã nhỏ/xa).
-- **Tốc độ xử lý**: < 100ms per frame.
+- **Thuật toán xử lý ảnh 9 cấp độ (9-Stage Multi-Engine + Async OCR Fallback)**:
+  1. **ZXing-CPP Grayscale gốc**: Quét siêu tốc 360 độ trên ảnh xám (~6ms).
+  2. **ZXing-CPP + Unsharp Mask**: Làm nét biên cạnh vạch barcode bị mờ nhẹ (~5ms).
+  3. **ZXing-CPP + Adaptive Threshold**: Khử vùng tối / ánh sáng không đều (~4ms).
+  4. **ZXing-CPP + ROI Center 2x**: Crop vùng trung tâm phiếu & phóng to 2 lần (~8ms).
+  5. **ZXing-CPP + CLAHE**: Cân bằng tương phản vùng sáng/tối (~7ms).
+  6. **ZXing-CPP + Bottom-Half Crop**: Crop nửa dưới phiếu (vùng bác sĩ giơ phiếu) (~6ms).
+  7. **PyZbar Fallback**: Engine dự phòng chuẩn cho các định dạng mã 1D đặc thù (~10ms).
+  8. **OpenCV BarcodeDetector & QRCodeDetector**: Phát hiện nhanh vùng chứa mã vạch.
+  9. **Async RapidOCR Fallback (Khử lỗi Out-of-Focus)**: Khi camera bị mất nét / mờ vạch sọc, luồng ngầm bất đồng bộ (Thread riêng) tự động dùng OpenCV `BarcodeDetector.detect()` để tìm vị trí vạch (hoặc full-frame fallback), phóng to 2x, áp dụng CLAHE + Unsharp Mask và dùng **RapidOCR (ONNX Runtime)** để đọc trực tiếp dòng chữ mã số in bên dưới vạch barcode (ví dụ: `XN2607290995`). OCR chạy bất đồng bộ mỗi 2 giây, đảm bảo luồng camera chính đạt tốc độ **>30 FPS không bao giờ bị đơ**.
+- **Tốc độ xử lý luồng camera chính**: < 150ms per frame.
 
 ### 2.2 Điều Khiển Rảnh Tay (Hands-Free Control System)
 1. **Bàn Đạp Chân (USB FootSwitch - HID Global Hook)**:

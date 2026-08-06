@@ -243,18 +243,25 @@ class CameraThread(QThread):
                 h, w, ch = rgb_frame.shape
                 bytes_per_line = ch * w
                 
-                cv2.putText(
-                    rgb_frame, f"Cam Index {self.camera_index} - {w}x{h}", (15, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (34, 197, 94), 2
-                )
-                
+                # Draw scan status & debug feedback overlay on camera stream
+                if self._pause_barcode_scan:
+                    cv2.putText(
+                        rgb_frame, "[QUET MA: TAM DUNG]", (15, 65),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (148, 163, 184), 2
+                    )
+                else:
+                    cv2.putText(
+                        rgb_frame, "[QUET MA: DANG HOAT DONG (ZXing-CPP 360-degree)]", (15, 65),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (234, 179, 8), 2
+                    )
+
                 # Draw last scanned barcode visual feedback overlay if active
                 if hasattr(self, '_last_visual_barcode') and self._last_visual_barcode:
                     v_text, v_time = self._last_visual_barcode
-                    if time.time() - v_time < 3.0:
+                    if time.time() - v_time < 4.0:
                         cv2.putText(
-                            rgb_frame, f"DA QUET MA: {v_text}", (15, 70),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, (34, 197, 94), 2
+                            rgb_frame, f"DA QUET THANH CONG: {v_text}", (15, 105),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (34, 197, 94), 2
                         )
 
                 qt_image = QImage(bytes(rgb_frame.data), w, h, bytes_per_line, QImage.Format_RGB888).copy()
@@ -279,138 +286,184 @@ class CameraThread(QThread):
 
         raw_data = None
         engine_used = ""
+        scan_start_t = time.time()
         
         if frame is None or frame.size == 0:
             return
 
         h, w = frame.shape[:2]
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if len(frame.shape) == 3 else frame
 
-        # Stage 0: ZXing-CPP Engine (High-speed C++ engine for 1D Paper Barcodes & 2D QR Codes)
+        # Helper: try ZXing-CPP on a processed image
+        def _try_zxing(img, label):
+            nonlocal raw_data, engine_used
+            if raw_data:
+                return True
+            try:
+                import zxingcpp
+                results = zxingcpp.read_barcodes(img, try_rotate=True, try_downscale=True, try_invert=True)
+                if results and results[0].text:
+                    raw_data = results[0].text.strip()
+                    engine_used = f"{label} ({results[0].format.name})"
+                    return True
+            except Exception:
+                pass
+            return False
+
+        # ── Stage 1: ZXing Direct on full-res grayscale ──────── ~3ms
+        _try_zxing(gray, "ZXing Direct")
+
+        # ── Stage 2: ZXing GlobalHistogram binarizer ─────────── ~3ms
         if not raw_data:
             try:
                 import zxingcpp
-                zx_results = zxingcpp.read_barcodes(gray)
-                if zx_results and zx_results[0].text:
-                    raw_data = zx_results[0].text.strip()
-                    engine_used = f"ZXing-CPP ({zx_results[0].format.name})"
+                results = zxingcpp.read_barcodes(gray, try_rotate=True, try_downscale=True, try_invert=True, binarizer=zxingcpp.Binarizer.GlobalHistogram)
+                if results and results[0].text:
+                    raw_data = results[0].text.strip()
+                    engine_used = f"ZXing GlobalHist ({results[0].format.name})"
             except Exception:
                 pass
 
-        # Create 960x540 downscaled version for ultra-fast 15ms scanning on 1080p webcams
-        if w > 1000:
-            small_gray = cv2.resize(gray, (960, int(540 * (h/w))), interpolation=cv2.INTER_AREA)
-        else:
-            small_gray = gray
-
-        # Stage 0: PyZbar on Lower Half Crop (Where doctors hold phone/paper barcode tickets)
+        # ── Stage 3: Unsharp Mask Sharpening ─────────────────── ~5ms
+        #   sharpened = original + 0.8 * (original - gaussian_blur)
         if not raw_data:
-            try:
-                from pyzbar import pyzbar
-                sh, sw = small_gray.shape
-                lower_crop = small_gray[int(sh*0.3):, :]
-                barcodes = pyzbar.decode(lower_crop)
-                if barcodes:
-                    raw_data = barcodes[0].data.decode("utf-8", errors="ignore").strip()
-                    engine_used = "PyZbar (Vùng Phía Dưới Lower-Crop)"
-            except Exception as e:
-                pass
+            blurred = cv2.GaussianBlur(gray, (0, 0), 3.0)
+            sharpened = cv2.addWeighted(gray, 1.8, blurred, -0.8, 0)
+            _try_zxing(sharpened, "ZXing Unsharp")
 
-        # Stage 1: PyZbar on Original Grayscale (Downsampled)
+        # ── Stage 4: Adaptive Threshold ──────────────────────── ~4ms
         if not raw_data:
-            try:
-                from pyzbar import pyzbar
-                barcodes = pyzbar.decode(small_gray)
-                if barcodes:
-                    raw_data = barcodes[0].data.decode("utf-8", errors="ignore").strip()
-                    engine_used = "PyZbar (Gốc 960x540)"
-            except Exception:
-                pass
+            adaptive = cv2.adaptiveThreshold(
+                gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY, 51, 10
+            )
+            _try_zxing(adaptive, "ZXing AdaptThresh")
 
-        # Stage 2: PyZbar on Full High-Res Grayscale (1080p)
+        # ── Stage 5: ROI Center-Crop 2x Upscale ─────────────── ~8ms
+        #   Barcode trên phiếu giấy thường nằm ở trung tâm/dưới
+        #   khung hình. Crop vùng giữa 60% rồi phóng to 2x cho
+        #   ZXing đọc được các vạch Code128 mảnh.
+        if not raw_data:
+            cy1, cy2 = int(h * 0.2), int(h * 0.9)
+            cx1, cx2 = int(w * 0.15), int(w * 0.85)
+            roi = gray[cy1:cy2, cx1:cx2]
+            roi_up = cv2.resize(roi, (roi.shape[1] * 2, roi.shape[0] * 2), interpolation=cv2.INTER_CUBIC)
+            _try_zxing(roi_up, "ZXing ROI-2x")
+
+        # ── Stage 6: CLAHE + Unsharp combo ───────────────────── ~7ms
+        if not raw_data:
+            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+            equalized = clahe.apply(gray)
+            eq_blur = cv2.GaussianBlur(equalized, (0, 0), 2.0)
+            eq_sharp = cv2.addWeighted(equalized, 1.5, eq_blur, -0.5, 0)
+            _try_zxing(eq_sharp, "ZXing CLAHE+Unsharp")
+
+        # ── Stage 7: ROI Bottom-Half Crop + Sharpen ──────────── ~6ms
+        #   Mã vạch thường ở nửa dưới phiếu khi bác sĩ cầm giấy
+        if not raw_data:
+            bottom = gray[int(h * 0.45):, :]
+            b_blur = cv2.GaussianBlur(bottom, (0, 0), 2.5)
+            b_sharp = cv2.addWeighted(bottom, 1.6, b_blur, -0.6, 0)
+            _try_zxing(b_sharp, "ZXing Bottom-Sharp")
+
+        # ── Stage 8: PyZbar Fallback ─────────────────────────── ~10ms
         if not raw_data:
             try:
                 from pyzbar import pyzbar
                 barcodes = pyzbar.decode(gray)
                 if barcodes:
                     raw_data = barcodes[0].data.decode("utf-8", errors="ignore").strip()
-                    engine_used = "PyZbar (Gốc 1080p High-Res)"
+                    engine_used = "PyZbar Fallback"
             except Exception:
                 pass
 
-        # Stage 3: PyZbar on High-Pass Sharpened Image (Fixes Out-of-Focus / Macro Blurry Shots)
+        # ── Stage 9: OCR Fallback (async, không block camera) ──
+        #   Khi camera out-of-focus, barcode bị mờ không decode được
+        #   nhưng dòng text "XN2607271188" dưới barcode vẫn đọc được.
+        #   OCR chạy trên thread riêng, kết quả trả về qua _ocr_result.
         if not raw_data:
-            try:
-                from pyzbar import pyzbar
-                kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
-                sharpened = cv2.filter2D(small_gray, -1, kernel)
-                barcodes = pyzbar.decode(sharpened)
-                if barcodes:
-                    raw_data = barcodes[0].data.decode("utf-8", errors="ignore").strip()
-                    engine_used = "PyZbar (Lọc Sắc Nét Khử Mờ)"
-            except Exception:
-                pass
+            import re as _re
+            import threading as _threading
+            
+            # Check if a previous OCR thread returned a result
+            if hasattr(self, '_ocr_result') and self._ocr_result:
+                raw_data = self._ocr_result
+                engine_used = self._ocr_engine_label
+                self._ocr_result = None
+                self._ocr_engine_label = None
+            
+            # Launch new OCR thread if not already running (throttle: every 2s)
+            now_ocr = time.time()
+            ocr_running = hasattr(self, '_ocr_thread') and self._ocr_thread and self._ocr_thread.is_alive()
+            if not raw_data and not ocr_running:
+                if not hasattr(self, '_last_ocr_t') or (now_ocr - self._last_ocr_t > 2.0):
+                    self._last_ocr_t = now_ocr
+                    # Snapshot frame for OCR (copy to avoid race condition)
+                    ocr_frame = frame.copy()
+                    ocr_gray = gray.copy()
+                    
+                    def _ocr_worker(f, g, w, h):
+                        try:
+                            # Lazy-init OCR engine
+                            if not hasattr(self, '_ocr_engine'):
+                                from rapidocr_onnxruntime import RapidOCR
+                                self._ocr_engine = RapidOCR()
+                                logger.info("[OCR_INIT] RapidOCR engine initialized")
+                            
+                            import numpy as _np
+                            
+                            # Step 1: Try to detect barcode region for focused OCR
+                            if not hasattr(self, '_barcode_detector'):
+                                self._barcode_detector = cv2.barcode.BarcodeDetector()
+                            
+                            ocr_img = None
+                            ok, points = self._barcode_detector.detect(g)
+                            if ok and points is not None:
+                                pts = _np.int32(points[0])
+                                bx, by, bbw, bbh = cv2.boundingRect(pts)
+                                pad = 25
+                                rx1, ry1 = max(0, bx - pad), max(0, by - pad)
+                                rx2, ry2 = min(w, bx + bbw + pad), min(h, by + bbh + pad)
+                                bc_roi = f[ry1:ry2, rx1:rx2]
+                                roi_gray = cv2.cvtColor(bc_roi, cv2.COLOR_BGR2GRAY) if len(bc_roi.shape) == 3 else bc_roi
+                                ocr_img = cv2.resize(roi_gray, (roi_gray.shape[1]*2, roi_gray.shape[0]*2), interpolation=cv2.INTER_CUBIC)
+                                logger.debug(f"[OCR_DETECT] Barcode region found: ({bx},{by},{bbw},{bbh})")
+                            else:
+                                # Fallback: OCR on full frame (slower but works when detect fails)
+                                ocr_img = g
+                                logger.debug(f"[OCR_DETECT] BarcodeDetector.detect() failed, using full frame OCR")
+                            
+                            # Step 2: CLAHE + Unsharp Mask enhancement
+                            clahe = cv2.createCLAHE(clipLimit=5.0, tileGridSize=(4, 4))
+                            eq = clahe.apply(ocr_img)
+                            eq_blur = cv2.GaussianBlur(eq, (0, 0), 1.5)
+                            eq_sharp = cv2.addWeighted(eq, 2.0, eq_blur, -1.0, 0)
+                            
+                            # Step 3: Run OCR
+                            result, _ = self._ocr_engine(eq_sharp)
+                            if result:
+                                for line in result:
+                                    _, text, conf = line
+                                    if conf < 0.5:
+                                        continue
+                                    clean = text.replace(' ', '').replace('O', '0').replace('o', '0').replace('l', '1')
+                                    match = _re.search(r'[XxKk][NnMm]\d{8,}', clean)
+                                    if not match:
+                                        match = _re.search(r'[A-Z]{2}\d{8,}', clean.upper())
+                                    if match:
+                                        code = match.group().upper()
+                                        code = code.replace('KN', 'XN').replace('XM', 'XN')
+                                        self._ocr_result = code
+                                        self._ocr_engine_label = f"OCR Fallback (conf={conf:.2f})"
+                                        logger.info(f"[OCR_SCAN] Đọc text barcode: '{text}' -> extracted '{code}'")
+                                        return
+                        except Exception as e:
+                            logger.debug(f"[OCR_ERROR] {str(e)}")
+                    
+                    self._ocr_thread = _threading.Thread(target=_ocr_worker, args=(ocr_frame, ocr_gray, w, h), daemon=True)
+                    self._ocr_thread.start()
 
-        # Stage 4: PyZbar on CLAHE Contrast Equalization (Fixes Phone Screen Glare)
-        if not raw_data:
-            try:
-                from pyzbar import pyzbar
-                clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
-                equalized = clahe.apply(small_gray)
-                barcodes = pyzbar.decode(equalized)
-                if barcodes:
-                    raw_data = barcodes[0].data.decode("utf-8", errors="ignore").strip()
-                    engine_used = "PyZbar (Khử Bóng Màn Hình CLAHE)"
-            except Exception:
-                pass
-
-        # Stage 5: PyZbar on Otsu Binarization Thresholding
-        if not raw_data:
-            try:
-                from pyzbar import pyzbar
-                _, thresh = cv2.threshold(small_gray, 128, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-                barcodes = pyzbar.decode(thresh)
-                if barcodes:
-                    raw_data = barcodes[0].data.decode("utf-8", errors="ignore").strip()
-                    engine_used = "PyZbar (Ngưỡng Binarize Otsu)"
-            except Exception:
-                pass
-
-        # Stage 6: Native OpenCV Barcode Detector
-        if not raw_data:
-            if not hasattr(self, 'opencv_barcode'):
-                self.opencv_barcode = cv2.barcode.BarcodeDetector()
-            try:
-                ok, decoded_info, _, _ = self.opencv_barcode.detectAndDecode(frame)
-                if ok and decoded_info and decoded_info[0]:
-                    raw_data = decoded_info[0].strip()
-                    engine_used = "OpenCV Barcode Engine"
-            except Exception:
-                pass
-
-        # Stage 7: Native OpenCV QRCode Detector
-        if not raw_data:
-            if not hasattr(self, 'qr_detector'):
-                self.qr_detector = cv2.QRCodeDetector()
-            try:
-                val, _, _ = self.qr_detector.detectAndDecode(frame)
-                if val:
-                    raw_data = val.strip()
-                    engine_used = "OpenCV QRCode Engine"
-            except Exception:
-                pass
-
-        # Stage 8: PyZbar on 90-degree Rotated Image (Fixes vertical phone orientation)
-        if not raw_data:
-            try:
-                from pyzbar import pyzbar
-                rotated = cv2.rotate(small_gray, cv2.ROTATE_90_CLOCKWISE)
-                barcodes = pyzbar.decode(rotated)
-                if barcodes:
-                    raw_data = barcodes[0].data.decode("utf-8", errors="ignore").strip()
-                    engine_used = "PyZbar (Xoay 90 Độ)"
-            except Exception:
-                pass
+        scan_elapsed_ms = (time.time() - scan_start_t) * 1000.0
 
         if raw_data:
             current_time = time.time()
@@ -419,11 +472,27 @@ class CameraThread(QThread):
                 self.last_barcode_time = current_time
                 self._last_visual_barcode = (raw_data, current_time)
                 self._pause_barcode_scan = True
-                logger.info(f"[BARCODE_SCAN_TRACE] ✅ Engine '{engine_used}' quét thành công Mã: '{raw_data}'. Dừng quét barcode cho đến khi làm mới/kết thúc ca.")
-                print(f"📷 [BARCODE_TRACE]: {engine_used} -> {raw_data} (Đã tạm dừng quét barcode)")
+                logger.info(f"[BARCODE_SCAN_TRACE] ✅ Engine '{engine_used}' quét thành công Mã: '{raw_data}' ({scan_elapsed_ms:.1f}ms trên ảnh {w}x{h}). Dừng quét cho đến ca mới.")
+                print(f"📷 [BARCODE_TRACE]: {engine_used} -> {raw_data} ({scan_elapsed_ms:.1f}ms)")
                 self.barcode_signal.emit(raw_data)
             else:
-                logger.debug(f"[BARCODE_COOLDOWN_SKIP] ⏳ Mã '{raw_data}' bỏ qua do cooldown (đã quét cách đây {(current_time - self.last_barcode_time):.1f}s)")
+                logger.debug(f"[BARCODE_COOLDOWN_SKIP] ⏳ Mã '{raw_data}' bỏ qua do cooldown")
+        else:
+            now = time.time()
+            if not hasattr(self, '_last_debug_log_t') or (now - self._last_debug_log_t > 3.0):
+                self._last_debug_log_t = now
+                logger.info(f"[BARCODE_DEBUG_HEARTBEAT] 🔍 Quét {w}x{h} ({scan_elapsed_ms:.1f}ms/frame) - Chưa phát hiện mã.")
+            # Auto-save raw camera frame for offline debug every 10 seconds
+            if not hasattr(self, '_last_debug_save_t') or (now - self._last_debug_save_t > 10.0):
+                self._last_debug_save_t = now
+                try:
+                    import pathlib
+                    debug_dir = pathlib.Path(r"c:\Users\WELCOME\Desktop\VietAnh\scratch")
+                    debug_dir.mkdir(parents=True, exist_ok=True)
+                    cv2.imwrite(str(debug_dir / "debug_frame.png"), frame)
+                    logger.info(f"[BARCODE_DEBUG_SAVE] Saved raw camera frame to scratch/debug_frame.png ({w}x{h})")
+                except Exception:
+                    pass
 
     def _save_photo(self, frame, trigger_timestamp):
         try:

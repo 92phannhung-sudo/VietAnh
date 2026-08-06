@@ -26,8 +26,12 @@ The system is specified to interface with the following physical hardware detect
 ### 3.2. Multi-System Barcode & QR Code Parsing
 * **Real-Time Stream Analysis**: Decodes codes continuously from the webcam video feed.
 * **Multi-Format Support**:
-  * **1D Barcodes**: Code 128 / Code 39 (e.g. `PHCN2647781`, `KCB-2026-0012`).
+  * **1D Barcodes**: Code 128 / Code 39 (e.g. `PHCN2647781`, `KCB-2026-0012`, `XN2607290995`).
   * **JSON QR Strings**: Extracts `id`, `name`, `birth_year`, and `gender` automatically (e.g. `{"id": "BN123", "name": "Nguyễn Văn A"}`).
+* **9-Stage Multi-Engine & Async OCR Pipeline**:
+  * Stages 1-6: ZXing-CPP 360-degree scanning with Unsharp Masking, Adaptive Thresholding, Center ROI 2x Upscaling, CLAHE contrast enhancement, and Bottom-half cropping.
+  * Stage 7-8: PyZbar Fallback and OpenCV BarcodeDetector/QRCodeDetector.
+  * Stage 9: **Async RapidOCR Fallback**: Background thread running OpenCV region detection + CLAHE + RapidOCR (ONNX Runtime) to read printed text strings (e.g. `XN2607290995`) directly when camera autofocus fails or causes severe motion blur. Operates asynchronously without freezing the camera display thread (>30 FPS).
 
 ### 3.6. Standalone Offline Installation & Deployment Specification
 * **Zero Python Requirement**: Target PCs in hospital wards do NOT require Python or any external runtime installed.
