@@ -24,7 +24,16 @@ def get_app_dir():
         return Path(sys.executable).parent
     return Path(__file__).parent
 
-
+def get_sherpa_model_dir():
+    """Resolve sherpa-onnx Vietnamese model directory."""
+    model_name = "sherpa-onnx-zipformer-vi-30M-int8-2026-02-09"
+    bundled = get_app_dir() / "models" / model_name
+    if bundled.exists():
+        return str(bundled)
+    alt = get_app_dir() / model_name
+    if alt.exists():
+        return str(alt)
+    return str(BASE_DIR / model_name)
 
 DB_PATH = BASE_DIR / "app.db"
 CONFIG_FILE = BASE_DIR / "config.json"
@@ -34,8 +43,7 @@ DEFAULT_CONFIG = {
     "trigger_key": "f13",
     "camera_index": 0,
     "microphone_name": "default",
-    "whisper_model": "small",
-    "whisper_language": "vi",
+    "sherpa_model_dir": get_sherpa_model_dir(),
     "working_dir": str(PHOTOS_DIR),
     "update_url": "http://192.168.1.100/updates/version.json",
     "enable_ota": False,  # Temporarily disabled for offline hospital setup
@@ -60,9 +68,7 @@ def load_config():
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-            # Xóa legacy vosk config nếu còn sót
-            data.pop("vosk_model_path", None)
-            data.pop("vosk_model_url", None)
+            data["sherpa_model_dir"] = get_sherpa_model_dir()
             for k, v in DEFAULT_CONFIG.items():
                 if k not in data:
                     data[k] = v

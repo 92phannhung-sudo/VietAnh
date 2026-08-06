@@ -63,33 +63,33 @@ pip install -r requirements.txt
 > Tải **Visual C++ Redistributable** từ https://aka.ms/vs/17/release/vc_redist.x64.exe  
 > Hoặc copy file `libzbar-64.dll` vào thư mục gốc dự án.
 
-### Bước 2.4: Tải Mô Hình AI Giọng Nói Tiếng Việt (Vosk)
+### Bước 2.4: Mô Hình AI Giọng Nói Tiếng Việt (sherpa-onnx Zipformer)
 
-Ứng dụng sử dụng **Vosk Offline Speech Recognition** (không cần Internet khi chạy).
+Ứng dụng sử dụng **sherpa-onnx Streaming ASR** với model **Zipformer Vietnamese 30M INT8** (không cần Internet khi chạy, kháng nhiễu tốt hơn Vosk).
 
-Tải mô hình Vosk tiếng Việt nhẹ (~50MB):
+Model đã có sẵn trong mã nguồn tại `models/sherpa-onnx-zipformer-vi-30M-int8-2026-02-09/`.
+
+Nếu thiếu, tải từ HuggingFace:
 ```powershell
-# Tải từ mạng Intranet nội bộ bệnh viện (nếu có):
-# http://192.168.1.100/models/vosk-model-small-vn-0.4.zip
-
-# Hoặc tải từ Internet:
-# https://alphacephei.com/vosk/models/vosk-model-small-vn-0.4.zip
+# https://huggingface.co/hynt/Zipformer-30M-RNNT-6000h
 ```
 
-Giải nén vào thư mục gốc dự án:
+Cấu trúc thư mục model:
 ```
 VietAnh/
-├── vosk-model-small-vn-0.4/    <-- Giải nén vào đây
-│   ├── conf/
-│   ├── graph/
-│   ├── am/
-│   └── ...
+├── models/
+│   └── sherpa-onnx-zipformer-vi-30M-int8-2026-02-09/
+│       ├── encoder.int8.onnx
+│       ├── decoder.onnx
+│       ├── joiner.int8.onnx
+│       ├── tokens.txt
+│       └── bpe.model
 ├── main.py
 ├── voice_detector.py
 └── ...
 ```
 
-Hoặc giải nén vào `%APPDATA%\PatientCaptureApp\vosk-model-small-vn-0.4\` (ứng dụng sẽ tự tìm ở cả 2 vị trí).
+Ứng dụng tự tìm model ở các vị trí: `models/`, thư mục gốc, hoặc `%APPDATA%\PatientCaptureApp\`.
 
 ---
 
@@ -206,12 +206,13 @@ pip install PyAudio-0.2.14-cp310-cp310-win_amd64.whl
 - Mặc định gán phím `F13`. Có thể đổi trong cài đặt (`trigger_key`).
 - Nếu phần mềm Antivirus chặn keyboard hook, ứng dụng tự động dùng Qt `keyPressEvent` fallback (cửa sổ phải đang được focus).
 
-### 6.5 Vosk giọng nói không nhận diện
+### 6.5 Giọng nói không nhận diện (sherpa-onnx)
 - Kiểm tra Microphone đã được chọn đúng trong Tab Cài đặt.
-- Đảm bảo thư mục `vosk-model-small-vn-0.4/` tồn tại và không bị rỗng.
+- Đảm bảo thư mục `models/sherpa-onnx-zipformer-vi-30M-int8-2026-02-09/` tồn tại và chứa đủ file `encoder.int8.onnx`, `decoder.onnx`, `joiner.int8.onnx`, `tokens.txt`.
 - Kiểm tra thanh Volume Gauge trên giao diện (phải nhảy khi nói).
 - Nói rõ ràng, cách micro 30-50cm: *"Chụp"*, *"Xóa"*, *"Tìm kiếm"*, *"Hoàn thành"*.
+- Nếu môi trường ồn, cài thêm `rapidfuzz` để bật fuzzy matching: `pip install rapidfuzz`
 
 ### 6.6 Ứng dụng khởi động chậm lần đầu
-- Lần chạy đầu tiên, Vosk cần 3-5 giây để nạp mô hình AI vào RAM. Các lần sau sẽ nhanh hơn.
+- Lần chạy đầu tiên, sherpa-onnx cần 2-3 giây để nạp Zipformer model vào RAM (~30MB). Các lần sau sẽ nhanh hơn.
 - Nếu model chưa có, ứng dụng hiển thị trạng thái **"Model missing"** — cần tải model theo Bước 2.4.

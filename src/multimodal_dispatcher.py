@@ -1,72 +1,78 @@
+"""Unified MultiModal Event Dispatcher — routes Keyboard, Pedal, and Voice inputs to ActionType signals."""
+
 from enum import Enum
+from PySide6.QtCore import QObject, Signal, Qt
+
 
 class ActionType(Enum):
+    """Clinical actions triggered by any input modality."""
     START_SESSION = "START_SESSION"
     CAPTURE = "CAPTURE"
     DELETE_LAST = "DELETE_LAST"
     SEARCH_GRID = "SEARCH_GRID"
     COMPLETE_SESSION = "COMPLETE_SESSION"
 
-try:
-    from PySide6.QtCore import QObject, Signal, Qt
-    HAS_PYSIDE6 = True
-except ImportError:
-    HAS_PYSIDE6 = False
-    class QObject:
-        pass
-    class Signal:
-        def __init__(self, *args):
-            self._callbacks = []
-        def connect(self, callback):
-            self._callbacks.append(callback)
-        def emit(self, val):
-            for cb in self._callbacks:
-                cb(val)
-    class Qt:
-        Key_Space = 32
-        Key_Delete = 16777219
-        Key_Backspace = 16777219
-        Key_F1 = 16777264
-        Key_F2 = 16777265
-        Key_F5 = 16777268
+
+# Lookup tables replace repeated if/elif chains (Fowler: Repeated Switches)
+VOICE_MAP = {
+    "chụp": ActionType.CAPTURE,
+    "chụp ảnh": ActionType.CAPTURE,
+    "xóa": ActionType.DELETE_LAST,
+    "xóa ảnh": ActionType.DELETE_LAST,
+    "tìm": ActionType.SEARCH_GRID,
+    "tìm kiếm": ActionType.SEARCH_GRID,
+    "tra cứu": ActionType.SEARCH_GRID,
+    "tạo phiên": ActionType.START_SESSION,
+    "bắt đầu phiên": ActionType.START_SESSION,
+    "bắt đầu": ActionType.START_SESSION,
+    "hoàn thành": ActionType.COMPLETE_SESSION,
+    "tiếp theo": ActionType.COMPLETE_SESSION,
+    "bệnh nhân tiếp": ActionType.COMPLETE_SESSION,
+}
+
+PEDAL_MAP = {
+    "SINGLE_TAP": ActionType.CAPTURE,
+    "LONG_PRESS": ActionType.DELETE_LAST,
+}
+
+KEY_MAP = {
+    Qt.Key_Space: ActionType.CAPTURE,
+    Qt.Key_Delete: ActionType.DELETE_LAST,
+    Qt.Key_Backspace: ActionType.DELETE_LAST,
+    Qt.Key_F1: ActionType.START_SESSION,
+    Qt.Key_F2: ActionType.COMPLETE_SESSION,
+    Qt.Key_F5: ActionType.SEARCH_GRID,
+}
+
 
 class MultiModalDispatcher(QObject):
-    if HAS_PYSIDE6:
-        action_triggered = Signal(ActionType)
-    else:
-        def __init__(self):
-            super().__init__()
-            self.action_triggered = Signal(ActionType)
+    """Dispatches clinical actions from any of the 3 parallel input channels."""
 
-    def handle_voice_command(self, text: str):
+    action_triggered = Signal(ActionType)
+
+    def handle_voice_command(self, text: str) -> None:
+        """Match Vietnamese voice keywords against VOICE_MAP lookup table."""
         if not text:
             return
         text_lower = text.lower().strip()
-        if "chụp" in text_lower:
-            self.action_triggered.emit(ActionType.CAPTURE)
-        elif "xóa" in text_lower:
-            self.action_triggered.emit(ActionType.DELETE_LAST)
-        elif "tìm" in text_lower or "tra cứu" in text_lower:
-            self.action_triggered.emit(ActionType.SEARCH_GRID)
-        elif "tạo phiên" in text_lower or "bắt đầu phiên" in text_lower:
-            self.action_triggered.emit(ActionType.START_SESSION)
-        elif "hoàn thành" in text_lower or "tiếp theo" in text_lower or "bệnh nhân tiếp" in text_lower:
-            self.action_triggered.emit(ActionType.COMPLETE_SESSION)
+        # Try exact match first, then substring match
+        action = VOICE_MAP.get(text_lower)
+        if action is None:
+            for keyword, act in VOICE_MAP.items():
+                if keyword in text_lower:
+                    action = act
+                    break
+        if action is not None:
+            self.action_triggered.emit(action)
 
-    def handle_pedal_event(self, gesture: str):
-        if gesture == "SINGLE_TAP":
-            self.action_triggered.emit(ActionType.CAPTURE)
-        elif gesture == "LONG_PRESS":
-            self.action_triggered.emit(ActionType.DELETE_LAST)
+    def handle_pedal_event(self, gesture: str) -> None:
+        """Map pedal FSM gesture string to action via PEDAL_MAP."""
+        action = PEDAL_MAP.get(gesture)
+        if action is not None:
+            self.action_triggered.emit(action)
 
-    def handle_key_event(self, key_val: int):
-        if key_val == Qt.Key_Space:
-            self.action_triggered.emit(ActionType.CAPTURE)
-        elif key_val == Qt.Key_Delete or key_val == Qt.Key_Backspace:
-            self.action_triggered.emit(ActionType.DELETE_LAST)
-        elif key_val == Qt.Key_F1:
-            self.action_triggered.emit(ActionType.START_SESSION)
-        elif key_val == Qt.Key_F2:
-            self.action_triggered.emit(ActionType.COMPLETE_SESSION)
-        elif key_val == Qt.Key_F5:
-            self.action_triggered.emit(ActionType.SEARCH_GRID)
+    def handle_key_event(self, key_val: int) -> None:
+        """Map Qt key code to action via KEY_MAP."""
+        action = KEY_MAP.get(key_val)
+        if action is not None:
+            self.action_triggered.emit(action)

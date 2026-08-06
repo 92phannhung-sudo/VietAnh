@@ -470,7 +470,7 @@ class HardwareScannerThread(QThread):
                 "name": real_mics[0],
                 "type": "Microphone / Audio Input",
                 "status": "SẴN SÀNG (OK)",
-                "info": "Driver âm thanh HD / Vosk Speech AI",
+                "info": "Driver âm thanh HD / sherpa-onnx ASR",
                 "index": 0
             })
         else:
@@ -1669,7 +1669,6 @@ class MainWindow(QMainWindow):
         self.voice_thread.status_signal.connect(self.update_voice_status)
         self.voice_thread.volume_signal.connect(self.update_voice_volume)
         self.voice_thread.error_signal.connect(self.handle_thread_error)
-        
         self.voice_thread.start()
 
     def start_updater_thread(self):
