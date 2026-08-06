@@ -1,37 +1,47 @@
-# THIẾT KẾ ĐẶC TẢ TÁI THIẾT KẾ GIAO DIỆN VÀ LUỒNG NGHIỆP VỤ HỆ THỐNG CHỤP ẢNH BỆNH ÁN ĐIỆN TỬ
+# THIẾT KẾ ĐẶC TẢ GIAO DIỆN VÀ LUỒNG NGHIỆP VỤ HỆ THỐNG CHỤP ẢNH BỆNH ÁN ĐIỆN TỬ
 *Dự án: 354 EMR Workstation (Offline Patient Photo Capture System)*
-*Ngày cập nhật đặc tả:* 2026-08-04  
-*Trạng thái:* Đang tinh chỉnh theo phản hồi người dùng (Bỏ Baseline)
+*Tệp đặc tả:* `docs/superpowers/specs/2026-08-04-emr-workstation-redesign-spec.md`  
+*Ngày cập nhật đặc tả:* 2026-08-06  
+*Trạng thái:* ĐÃ PHÊ DUYỆT (APPROVED BY USER)
 
 ---
 
-## 1. MỤC TIÊU VÀ TỔNG QUAN TÁI THIẾT KẾ
+## 1. MỤC TIÊU VÀ TỔNG QUAN HỆ THỐNG
 
 ### 1.1. Mục tiêu Cốt lõi
-Chuyển đổi từ giao diện 4-Tab phân mảnh sang **Bảng điều khiển Y tế Tập trung (Unified Clinical Cockpit)** trên 1 màn hình đơn duy nhất. Tối ưu diện tích quan sát Camera Live Stream 1080p lên **100% chiều rộng màn hình (Bỏ phần so sánh Baseline)**, cho phép Bác sĩ / Kỹ thuật viên chụp ảnh tổn thương rõ nét nhất và vận hành 100% rảnh tay qua Bàn đạp chân USB và Giọng nói Tiếng Việt Offline.
+Chuyển đổi giao diện hệ thống sang **Bảng điều khiển Y tế Tập trung Màn hình Đơn (Unified Clinical Cockpit)** chuẩn PySide6 QDarkTheme. Đảm bảo Bác sĩ / Kỹ thuật viên vận hành 100% rảnh tay qua Bàn đạp chân USB và Giọng nói Tiếng Việt Offline, hỗ trợ so sánh Ảnh Baseline khám cũ song song bên cạnh Live Stream Camera.
+
+### 1.2. Môi trường & Bộ Thư viện Giao diện
+- **Khung giao diện:** PySide6 (Qt for Python).
+- **Bộ chuẩn màu QDarkTheme:** Background `#0F172A`, Container `#1E293B`, Primary `#0284C7`, Success `#16A34A`, Border `#334155`, Text `#F8FAFC`.
+- **Độ phân giải chuẩn:** 1440x900px (16:10 Desktop Window).
 
 ---
 
-## 2. BỐ CỤC GIAO DIỆN TẬP TRUNG MÀN HÌNH RỘNG (WIDESCREEN CLINICAL COCKPIT)
+## 2. BỐ CỤC GIAO DIỆN BẢNG ĐIỀU KHIỂN TẬP TRUNG (UNIFIED CLINICAL COCKPIT)
 
-Màn hình làm việc chính được chia làm 3 khu vực chức năng dọc:
+Giao diện chính được bố trí theo 4 khu vực chức năng tiêu chuẩn:
 
 ```
 +---------------------------------------------------------------------------------------------------+
-| TOP BAR: [🏥 354 EMR] | 👤 Bác sĩ: BS. Nguyễn Văn A | 🦶 Pedal: OK | 🎙️ Voice: OK | 📷 Camera: 1080p |
+| WINDOW TITLE BAR: 🔴 🟡 🟢  354 EMR Workstation v1.0.4 - Bảng Điều Khiển Y Tế Tập Trung            |
 +---------------------------------------------------------------------------------------------------+
-| STANDBY / PATIENT BANNER: Mã BN: [__________] | Họ Tên: [__________] | Năm Sinh: [____] | Nam/Nữ  |
-| [🔍 F5 Tra Cứu Hồ Sơ Grid]  [🚀 F1 Bắt Đầu Phiên Chụp]                                            |
+| HEADER BAR: [🏥 354 EMR] | 👤 BS. Nguyễn Văn A | 🦶 Pedal: OK | 🎙️ Voice: READY | 📷 Camera: 1080p|
 +---------------------------------------------------------------------------------------------------+
-| CENTER PANEL (100% WIDESCREEN): LIVE CAMERA STREAM 1080p                                          |
-|                                                                                                   |
-| - Live feed Logitech C920e 1080p diện tích tối đa (Widescreen 1400x640px)                        |
-| - Flash green border cue on capture (<150ms)                                                      |
-| - Voice waveform / Pedal trigger overlay cues                                                     |
-|                                                                                                   |
+| STANDBY PATIENT BANNER:                                                                           |
+| Mã BN: [ BN2026-0804 ] | Họ Tên: [ Nguyễn Văn A ] | Năm Sinh: [ 1987 ] | Giới Tính: [ Nam ]        |
+| [🔍 F5 Tra Cứu Hồ Sơ Grid]   [🚀 F1 Bắt Đầu Phiên Chụp]                                           |
 +---------------------------------------------------------------------------------------------------+
-| BOTTOM PANEL: FILMSTRIP THUMBNAIL CAROUSEL & ACTION TOOLBAR                                       |
-| [Ảnh #1]  [Ảnh #2]  [Ảnh #3]  | [F1 Tạo/Bắt đầu phiên]  [F5 Tìm hồ sơ]  [F2 Hoàn thành] [Delete Xóa]|
+| CENTER SPLIT PANEL (TỈ LỆ 60 / 40):                                                               |
+| +-----------------------------------------------+ +---------------------------------------------+ |
+| | LIVE STREAM CAMERA FEED 1080p (60% WIDTH)     | | ÂNH BASELINE LẦN KHÁM TRƯỚC (40% WIDTH)     | |
+| | - Feed Logitech C920e 1080p Full HD           | | - Tự động hiển thị song song khi chọn BN cũ| |
+| | - Green border shutter cue (<150ms)           | | - Thẻ lâm sàng: [✓ Da liễu] [✓ Vùng Mặt]  | |
+| | - Overlay hướng dẫn Bàn đạp / Voice           | |                                             | |
+| +-----------------------------------------------+ +---------------------------------------------+ |
++---------------------------------------------------------------------------------------------------+
+| BOTTOM FILMSTRIP CAROUSEL & ACTION TOOLBAR                                                         |
+| [Ảnh #1]  [Ảnh #2]  [Ảnh #3]               |  [✅ F2 HOÀN THÀNH CA KHÁM (Lưu CSDL & Reset)]     |
 +---------------------------------------------------------------------------------------------------+
 ```
 
@@ -39,7 +49,7 @@ Màn hình làm việc chính được chia làm 3 khu vực chức năng dọc:
 
 ## 3. CƠ CHẾ ĐIỀU KHIỂN ĐA PHƯƠNG THỨC SONG SONG (PARALLEL MULTI-MODAL CONTROL)
 
-Hệ thống duy trì đồng thời 3 kênh đầu vào lắng nghe ngầm trên toàn bộ ứng dụng mà không cần chuyển tiêu điểm chuột:
+Hệ thống duy trì đồng thời 3 kênh đầu vào ngầm trên toàn bộ ứng dụng:
 
 | Thao tác Lâm sàng | ⌨️ Bàn Phím / Phím Tắt | 🦶 Bàn Đạp Chân (FSM) | 🎙️ Giọng Nói Offline (Vosk) | 📷 Camera / Scanner |
 | :--- | :--- | :--- | :--- | :--- |
@@ -53,25 +63,22 @@ Hệ thống duy trì đồng thời 3 kênh đầu vào lắng nghe ngầm trê
 
 ## 4. QUY TRÌNH NGHIỆP VỤ VÒNG ĐỜI PHIÊN KHÁM (END-TO-END WORKFLOW)
 
-### 🔵 BƯỚC 1: Chế độ Chờ, Tra Cứu Dạng Lưới & Kiểm duyệt (Standby, Grid Search & Validation Mode)
-1. **Bắt đầu:** Bác sĩ bấm nút GUI / bấm `F1` / đọc lệnh *"Tạo phiên làm việc mới"*. Camera và hệ thống chuyển sang **Standby QR Scan Mode**.
-2. **Tra cứu Hồ sơ Cũ dạng Lưới (Grid Search):**
-   - Kích hoạt: Nút GUI **"🔍 F5 Tìm hồ sơ"**, phím **`F5`**, Giọng nói *"Tìm kiếm hồ sơ"*, hoặc **Quét mã QR/Barcode trên phiếu ban đầu**.
-   - Bộ lọc Optional: *Mã hồ sơ/phiếu*, *Họ tên* (không dấu), *Năm sinh*, *Giới tính*.
-   - Kết quả Lưới (Grid Cards): Thẻ thông tin BN kèm ngày khám trước và số ảnh.
-3. **Kiểm duyệt (Validation):** Viền xanh lá (Valid) khi đủ 4 trường bắt buộc.
-4. **Khởi tạo Phiên:** Nút **"Bắt đầu phiên chụp"** khả dụng. Khi kích hoạt $\rightarrow$ Chuyển sang Bước 2.
+### 🔵 BƯỚC 1: Chế độ Chờ, Tra Cứu Dạng Lưới & Kiểm duyệt (Standby, Grid Search & Validation)
+1. **Khởi tạo:** Hệ thống ở Chế độ Chờ. Quét QR phiếu hoặc nhập thủ công 4 trường (`Mã BN`, `Họ tên`, `Năm sinh`, `Giới tính`).
+2. **Tra cứu Hồ sơ Cũ dạng Lưới (`F5` Modal):**
+   - Kích hoạt qua phím `F5`, nút GUI, giọng nói *"Tìm kiếm hồ sơ"*, hoặc quét QR phiếu cũ.
+   - Hiển thị danh sách Lưới 3 cột (Grid View) với thumbnail Ảnh Baseline cũ và ngày khám gần nhất.
+3. **Kiểm duyệt (Validation):** Đổi màu viền xanh lá (Valid) khi đủ 4 trường $\rightarrow$ Nút `F1 Bắt Đầu Phiên` sáng lên.
 
-### 🟢 BƯỚC 2: Chụp Ảnh Rảnh Tay Màn Hình Rộng 100% (Widescreen Live Capture Mode)
+### 🟢 BƯỚC 2: Chụp Ảnh Rảnh Tay & So Sánh Baseline (Live Capture Mode)
 1. **Chụp Ảnh:** 1 Giậm bàn đạp / Voice *"Chụp ảnh"* / `Space`.
-   - Camera nháy viền xanh nhạt + Phát âm thanh shutter.
-   - Ảnh lưu ngầm đĩa đệm (< 150ms) và đẩy lên thanh Filmstrip ở dưới.
-   - Diện tích camera mở rộng toàn màn hình (100% Widescreen), không bị chia cắt bởi ô Baseline.
-2. **Xóa Ảnh Vừa Chụp:** Giậm giữ bàn đạp (Long press) / Voice *"Xóa ảnh"* / `Delete`.
-   - Đưa ảnh gần nhất trên Filmstrip vào thùng rác tạm.
-   - Hiển thị Toast Notification *"Đã xóa ảnh #X"* mà không làm gián đoạn live stream camera.
+   - Nháy viền xanh nhạt + Âm thanh shutter.
+   - Ảnh lưu ngầm đĩa đệm (<150ms) và đẩy lên thanh Filmstrip ở dưới.
+2. **So sánh Baseline:** Ô 40% bên phải hiển thị ảnh khám cũ của bệnh nhân để bác sĩ đánh giá tiến triển ngay tại chỗ.
+3. **Xóa Ảnh Vừa Chụp:** Giậm giữ bàn đạp (Long press) / Voice *"Xóa ảnh"* / `Delete`.
+   - Đưa ảnh gần nhất trên Filmstrip vào thùng rác tạm + Toast thông báo *"Đã xóa ảnh #X"*.
 
-### 🟡 BƯỚC 3: Hoàn Thành Phiên Khám & Reset (Session Completion & Reset Mode)
-1. **Kích hoạt:** Bấm nút GUI / Phím `F2` / Voice *"Hoàn thành"* (hoặc *"Bệnh nhân tiếp"*).
-2. **Xử lý:** Chốt danh sách ảnh, ghi CSDL SQLite (`patients`, `photos`, `audit_logs`), xuất file báo cáo PDF (nếu bật).
-3. **Reset:** Xóa sạch dữ liệu hiển thị trên màn hình, quay về **Trạng thái Chờ Bắt Đầu Phiên Mới** cho bệnh nhân tiếp theo.
+### 🟡 BƯỚC 3: Hoàn Thành Ca Khám & Reset (Session Completion Mode)
+1. **Kích hoạt:** Bấm `F2` / Voice *"Hoàn thành"*.
+2. **Xử lý:** Lưu CSDL SQLite (`patients`, `photos`, `audit_logs`), xuất báo cáo PDF (nếu bật).
+3. **Reset:** Xóa thông tin bệnh nhân trên màn hình, quay về Trạng thái Chờ cho bệnh nhân tiếp theo.
