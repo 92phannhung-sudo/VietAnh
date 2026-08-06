@@ -1,6 +1,15 @@
 import unittest
-from src.multimodal_dispatcher import MultiModalDispatcher, ActionType
 
+# Guard: skip entire module if PySide6 is not installed
+try:
+    from PySide6.QtCore import Qt
+    from src.multimodal_dispatcher import MultiModalDispatcher, ActionType
+    HAS_PYSIDE6 = True
+except ImportError:
+    HAS_PYSIDE6 = False
+
+
+@unittest.skipUnless(HAS_PYSIDE6, "PySide6 not installed — skipping Qt-dependent tests")
 class TestMultiModalDispatcher(unittest.TestCase):
     def test_dispatcher_voice_mapping(self):
         dispatcher = MultiModalDispatcher()
@@ -34,7 +43,6 @@ class TestMultiModalDispatcher(unittest.TestCase):
         self.assertEqual(actions[-1], ActionType.DELETE_LAST)
 
     def test_dispatcher_key_mapping(self):
-        from src.multimodal_dispatcher import Qt
         dispatcher = MultiModalDispatcher()
         actions = []
         dispatcher.action_triggered.connect(lambda act: actions.append(act))
