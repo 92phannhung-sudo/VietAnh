@@ -137,7 +137,7 @@ class VoiceDetectorThread(QThread):
         try:
             self.status_signal.emit("Initializing Voice Model...")
             model = vosk.Model(str(model_path))
-            grammar_str = '["chụp", "xóa", "tiếp", "xem", "[unk]"]'
+            grammar_str = '["chụp", "chụp ảnh", "xóa", "xóa ảnh", "tiếp", "bệnh nhân tiếp", "xem", "tìm", "tìm kiếm", "tra cứu", "bắt đầu", "tạo phiên", "hoàn thành", "[unk]"]'
             rec = vosk.KaldiRecognizer(model, 16000, grammar_str)
             
             import time
@@ -233,7 +233,7 @@ class VoiceDetectorThread(QThread):
                         self.volume_signal.emit(current_vol)
                         
                         # Check recognizer
-                        keywords = ["chụp", "xóa", "tiếp", "xem"]
+                        keywords = ["chụp", "chụp ảnh", "xóa", "xóa ảnh", "tiếp", "bệnh nhân tiếp", "xem", "tìm", "tìm kiếm", "tra cứu", "bắt đầu", "tạo phiên", "hoàn thành"]
                         if rec.AcceptWaveform(data):
                             res = json.loads(rec.Result())
                             text = res.get("text", "").lower().strip()

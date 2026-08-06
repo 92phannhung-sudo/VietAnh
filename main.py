@@ -1379,26 +1379,34 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def on_pedal_gesture_detected(self, gesture):
         logger.info(f"[GESTURE_EVENT] Pedal Gesture: {gesture} | Op: {self.active_operator_id}")
+        if hasattr(self, 'multimodal_dispatcher') and self.multimodal_dispatcher:
+            self.multimodal_dispatcher.handle_pedal_event(gesture)
         action_id = database.get_mapped_action(self.active_operator_id, "PEDAL_GESTURE", gesture)
         if action_id:
             action_registry.dispatch_action(action_id, self)
         else:
             if gesture == "SINGLE_TAP":
                 self.trigger_photo_capture(source="PEDAL_SINGLE_TAP")
-            elif gesture == "DOUBLE_TAP":
+            elif gesture == "DOUBLE_TAP" or gesture == "LONG_PRESS":
                 self.delete_latest_photo()
 
     @Slot(str)
     def on_voice_keyword_detected(self, keyword):
         logger.info(f"[VOICE_EVENT] Voice Keyword: '{keyword}' | Op: {self.active_operator_id}")
+        if hasattr(self, 'multimodal_dispatcher') and self.multimodal_dispatcher:
+            self.multimodal_dispatcher.handle_voice_command(keyword)
         action_id = database.get_mapped_action(self.active_operator_id, "VOICE_KEYWORD", keyword)
         if action_id:
             action_registry.dispatch_action(action_id, self)
         else:
-            if keyword == "chụp":
+            if keyword in ["chụp", "chụp ảnh"]:
                 self.trigger_photo_capture(source="VOICE_CHỤP")
-            elif keyword == "xóa":
+            elif keyword in ["xóa", "xóa ảnh"]:
                 self.delete_latest_photo()
+            elif keyword in ["tìm", "tìm kiếm", "tra cứu"]:
+                self.open_patient_search_dialog()
+            elif keyword in ["hoàn thành", "tiếp", "bệnh nhân tiếp"]:
+                self.reset_active_patient()
 
     def delete_latest_photo(self):
         if not self.current_patient_id:
@@ -1477,6 +1485,20 @@ class MainWindow(QMainWindow):
                 self.start_voice_thread()
         except Exception as e:
             logger.error(f"[MIC_ERROR] Error changing microphone: {str(e)}", exc_info=True)
+
+    def open_patient_search_dialog(self):
+        from src.ui_patient_grid import PatientGridDialog
+        if not hasattr(self, 'search_service') or not self.search_service:
+            self.search_service = PatientSearchService(db_path=config.DB_PATH)
+        dialog = PatientGridDialog(search_service=self.search_service, parent=self)
+        dialog.patient_selected.connect(self.on_patient_selected_from_grid)
+        dialog.exec()
+
+    @Slot(dict)
+    def on_patient_selected_from_grid(self, patient_dict):
+        patient_id = patient_dict.get("patient_id")
+        if patient_id:
+            self.handle_scanned_barcode(patient_id)
 
     @Slot(str)
     def handle_scanned_barcode(self, barcode_data):
@@ -1680,9 +1702,13 @@ class MainWindow(QMainWindow):
 
     def keyPressEvent(self, event):
         key = event.key()
+        modifiers = event.modifiers()
         if hasattr(self, 'multimodal_dispatcher') and self.multimodal_dispatcher:
             self.multimodal_dispatcher.handle_key_event(key)
-        super().keyPressEvent(event)
+            
+        if key == Qt.Key_F5 or (modifiers == Qt.ControlModifier and key == Qt.Key_F):
+            self.open_patient_search_dialog()
+            return
         elif key == Qt.Key_F6 or key == Qt.Key_Delete:
             self.delete_latest_photo()
             return
