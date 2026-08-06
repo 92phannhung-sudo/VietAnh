@@ -347,6 +347,19 @@ class MainWindow(QMainWindow):
         self.patient_search_service = PatientSearchService()
         self.multimodal_dispatcher = MultiModalDispatcher()
 
+        # Safe defaults for widgets referenced by legacy handlers
+        self.lbl_scan_status = QLabel("")
+        self.txt_patient_id = QLineEdit()
+        self.txt_patient_name = QLineEdit()
+        self.txt_birth_year = QLineEdit()
+        self.txt_gender = QComboBox()
+        self.voice_gauge = QProgressBar()
+        self.lbl_voice_status = QLabel("")
+        self.lbl_pedal_info = QLabel("")
+        self.grid_widget = QWidget()
+        self.grid_layout = QHBoxLayout(self.grid_widget)
+        self.search_service = self.patient_search_service
+
         # Apply initial theme QSS
         self.apply_theme(self.app_config.get("active_theme", "dark"))
         
@@ -459,7 +472,24 @@ class MainWindow(QMainWindow):
         # ----------------- STACKED WORKSPACE CONTAINER -----------------
         self.stack = QStackedWidget()
         
-        self.tab1_widget = self.build_tab1_capture()
+        # TAB 1: NEW Unified Clinical Cockpit (replaces old build_tab1_capture)
+        self.cockpit_widget = ClinicalCockpitWidget(
+            search_service=self.patient_search_service,
+            dispatcher=self.multimodal_dispatcher,
+            parent=self
+        )
+        # Wire cockpit signals to main app handlers
+        self.cockpit_widget.capture_requested.connect(lambda: self.trigger_photo_capture(source="COCKPIT_CAPTURE"))
+        self.cockpit_widget.delete_last_requested.connect(self.delete_latest_photo)
+        self.cockpit_widget.complete_session_requested.connect(self.reset_active_patient)
+        self.cockpit_widget.start_session_requested.connect(self._on_cockpit_start_session)
+        self.cockpit_widget.patient_loaded.connect(self._on_cockpit_patient_loaded)
+        
+        # Keep references for camera frame & voice/pedal status updates
+        self.camera_feed = self.cockpit_widget.camera_label
+        self.lbl_baseline_photo = self.cockpit_widget.baseline_label
+        
+        self.tab1_widget = self.cockpit_widget
         self.tab2_widget = self.build_tab2_history()
         self.tab3_widget = self.build_tab3_staff()
         self.tab4_widget = self.build_tab4_settings()
@@ -491,6 +521,32 @@ class MainWindow(QMainWindow):
             self.load_history_records()
         elif index == 2:
             self.load_staff_and_audit_data()
+
+    def _on_cockpit_start_session(self):
+        """Handle start session signal from ClinicalCockpitWidget."""
+        if hasattr(self, 'cockpit_widget') and self.cockpit_widget.active_patient:
+            patient_id = self.cockpit_widget.input_id.text().strip()
+            if patient_id:
+                self.current_patient_id = patient_id
+                self.camera_thread.set_active_patient(patient_id)
+                self.status_bar.showMessage(f"Phiên chụp đã bắt đầu cho BN: {patient_id}", 5000)
+                logger.info(f"[SESSION_START] Patient: {patient_id} via ClinicalCockpit")
+
+    def _on_cockpit_patient_loaded(self, patient_data: dict):
+        """Sync patient data from ClinicalCockpitWidget grid search into main app state."""
+        patient_id = patient_data.get("patient_id", "")
+        if patient_id:
+            self.current_patient_id = patient_id
+            self.camera_thread.set_active_patient(patient_id)
+            # Also sync legacy form fields if they exist
+            if hasattr(self, 'txt_patient_id'):
+                self.txt_patient_id.setText(patient_id)
+            if hasattr(self, 'txt_patient_name'):
+                self.txt_patient_name.setText(patient_data.get("full_name", ""))
+            if hasattr(self, 'txt_birth_year'):
+                self.txt_birth_year.setText(patient_data.get("birth_year", ""))
+            self.load_patient_photos()
+            logger.info(f"[COCKPIT_PATIENT_LOAD] Synced patient {patient_id} from ClinicalCockpit grid")
 
     # ----------------- TAB 1: LIVE CAPTURE & SPLIT COMPARISON -----------------
     def build_tab1_capture(self):
