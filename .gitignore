@@ -37,3 +37,11 @@ logs/
 .idea/
 .DS_Store
 Thumbs.db
+
+# App Models & Temporary Scratch
+models/
+vosk-model-*/
+scratch/
+launch_out.txt
+INSTALLATION_LOG.md
+test_voice_keywords.py

@@ -103,6 +103,12 @@ class CameraThread(QThread):
         self._active_operator_id = ""
         self.last_barcode_data = ""
         self.last_barcode_time = 0
+        self._pause_barcode_scan = True
+
+    def resume_barcode_scanning(self):
+        self._pause_barcode_scan = False
+        self.last_barcode_data = ""
+        logger.info("[BARCODE_SCAN] Enabled/Resumed barcode scanning for patient session.")
 
     def set_camera(self, index):
         if self.camera_index == index and self.isRunning():
@@ -222,6 +228,8 @@ class CameraThread(QThread):
                     self._capture_requested = False
                     self._save_photo(frame, start_t)
 
+                self._scan_barcode(frame)
+
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 if not isinstance(rgb_frame, np.ndarray) or rgb_frame.size == 0:
                     continue
@@ -236,12 +244,19 @@ class CameraThread(QThread):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (34, 197, 94), 2
                 )
                 
+                # Draw last scanned barcode visual feedback overlay if active
+                if hasattr(self, '_last_visual_barcode') and self._last_visual_barcode:
+                    v_text, v_time = self._last_visual_barcode
+                    if time.time() - v_time < 3.0:
+                        cv2.putText(
+                            rgb_frame, f"DA QUET MA: {v_text}", (15, 70),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, (34, 197, 94), 2
+                        )
+
                 qt_image = QImage(bytes(rgb_frame.data), w, h, bytes_per_line, QImage.Format_RGB888).copy()
                 self.frame_signal.emit(qt_image)
 
                 frame_counter += 1
-                self._scan_barcode(frame)
-
                 time.sleep(0.01)
 
         except Exception as ex:
@@ -255,6 +270,9 @@ class CameraThread(QThread):
             self._running = False
 
     def _scan_barcode(self, frame):
+        if self._pause_barcode_scan:
+            return
+
         raw_data = None
         engine_used = ""
         
@@ -384,9 +402,13 @@ class CameraThread(QThread):
             if raw_data != self.last_barcode_data or (current_time - self.last_barcode_time > 2.0):
                 self.last_barcode_data = raw_data
                 self.last_barcode_time = current_time
-                logger.info(f"[BARCODE_SCAN_TRACE] ✅ Engine '{engine_used}' quét thành công Mã: '{raw_data}'")
-                print(f"📷 [BARCODE_TRACE]: {engine_used} -> {raw_data}")
+                self._last_visual_barcode = (raw_data, current_time)
+                self._pause_barcode_scan = True
+                logger.info(f"[BARCODE_SCAN_TRACE] ✅ Engine '{engine_used}' quét thành công Mã: '{raw_data}'. Dừng quét barcode cho đến khi làm mới/kết thúc ca.")
+                print(f"📷 [BARCODE_TRACE]: {engine_used} -> {raw_data} (Đã tạm dừng quét barcode)")
                 self.barcode_signal.emit(raw_data)
+            else:
+                logger.debug(f"[BARCODE_COOLDOWN_SKIP] ⏳ Mã '{raw_data}' bỏ qua do cooldown (đã quét cách đây {(current_time - self.last_barcode_time):.1f}s)")
 
     def _save_photo(self, frame, trigger_timestamp):
         try:
@@ -601,13 +623,13 @@ class MainWindow(QMainWindow):
         
         header_layout.addSpacing(20)
 
-        # Horizontal Tab Buttons (F1-F4)
+        # Horizontal Navigation Tab Buttons (1-4)
         self.nav_btns = []
         tab_titles = [
-            ("F1 📷  1. Chụp Ảnh", 0),
-            ("F2 📂  2. Thư Mục Bệnh Án", 1),
-            ("F3 👨‍⚕️  3. Nhân Viên", 2),
-            ("F4 ⚙️  4. Cài Đặt", 3)
+            ("📷  1. Chụp Ảnh", 0),
+            ("📂  2. Thư Mục Bệnh Án", 1),
+            ("👨‍⚕️  3. Nhân Viên", 2),
+            ("⚙️  4. Cài Đặt", 3)
         ]
         
         for text, idx in tab_titles:
@@ -699,14 +721,27 @@ class MainWindow(QMainWindow):
             self.load_staff_and_audit_data()
 
     def _on_cockpit_start_session(self):
-        """Handle start session signal from ClinicalCockpitWidget."""
-        if hasattr(self, 'cockpit_widget') and self.cockpit_widget.active_patient:
-            patient_id = self.cockpit_widget.input_id.text().strip()
-            if patient_id:
-                self.current_patient_id = patient_id
-                self.camera_thread.set_active_patient(patient_id)
-                self.status_bar.showMessage(f"Phiên chụp đã bắt đầu cho BN: {patient_id}", 5000)
-                logger.info(f"[SESSION_START] Patient: {patient_id} via ClinicalCockpit")
+        """Handle F1: Activate session if patient ID exists, or reset for new patient if empty."""
+        p_id = ""
+        if hasattr(self, 'cockpit_widget') and self.cockpit_widget:
+            p_id = self.cockpit_widget.input_id.text().strip()
+        if p_id:
+            self.current_patient_id = p_id
+            if hasattr(self, 'camera_thread') and self.camera_thread:
+                self.camera_thread.set_active_patient(p_id)
+            self.load_patient_photos()
+            self.status_bar.showMessage(f"🚀 [F1]: Phiên chụp ĐÃ KÍCH HOẠT cho Bệnh nhân: {p_id}", 5000)
+            logger.info(f"[SESSION_F1] Activated session for patient: {p_id}")
+        else:
+            if hasattr(self, 'cockpit_widget') and self.cockpit_widget:
+                self.cockpit_widget.reset_session()
+            self.current_patient_id = None
+            if hasattr(self, 'camera_thread') and self.camera_thread:
+                self.camera_thread.set_active_patient(None)
+                self.camera_thread.resume_barcode_scanning()
+            self.load_patient_photos()
+            self.status_bar.showMessage("🚀 [F1]: Mở phiên khám mới. Vui lòng quét mã QR hoặc nhập Mã BN...", 5000)
+            logger.info("[SESSION_F1] Reset form and resumed barcode scan for new patient entry")
 
     def _on_cockpit_patient_loaded(self, patient_data: dict):
         """Sync patient data from ClinicalCockpitWidget grid search into main app state."""
@@ -1669,7 +1704,19 @@ class MainWindow(QMainWindow):
         self.voice_thread.status_signal.connect(self.update_voice_status)
         self.voice_thread.volume_signal.connect(self.update_voice_volume)
         self.voice_thread.error_signal.connect(self.handle_thread_error)
+        self.voice_thread.comparison_signal.connect(
+            lambda offline_text, google_text, score: logger.info(
+                f"[VOICE_BENCHMARK] sherpa-onnx: '{offline_text}' | Google Voice: '{google_text}' | Similarity: {score:.0f}%"
+            )
+        )
+        self.voice_thread.patient_info_signal.connect(self.handle_voice_patient_info)
         self.voice_thread.start()
+
+    @Slot(dict)
+    def handle_voice_patient_info(self, patient_data):
+        if hasattr(self, 'cockpit_widget') and self.cockpit_widget:
+            logger.info(f"[VOICE_PATIENT_LOADED] Auto-filling banner fields: {patient_data}")
+            self.cockpit_widget.load_patient_from_voice(patient_data)
 
     def start_updater_thread(self):
         if not self.app_config.get("enable_ota", False):
@@ -1695,6 +1742,9 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def on_pedal_gesture_detected(self, gesture):
+        if hasattr(self, 'cockpit_widget') and self.cockpit_widget and not self.cockpit_widget.is_session_open:
+            logger.info(f"[PEDAL_EVENT] Ignored pedal gesture '{gesture}' because session is closed (Standby mode).")
+            return
         logger.info(f"[GESTURE_EVENT] Pedal Gesture: {gesture} | Op: {self.active_operator_id}")
         if hasattr(self, 'multimodal_dispatcher') and self.multimodal_dispatcher:
             self.multimodal_dispatcher.handle_pedal_event(gesture)
@@ -1709,6 +1759,9 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def on_voice_keyword_detected(self, keyword):
+        if hasattr(self, 'cockpit_widget') and self.cockpit_widget and not self.cockpit_widget.is_session_open:
+            logger.info(f"[VOICE_EVENT] Ignored voice keyword '{keyword}' because session is closed (Standby mode).")
+            return
         # Ignore clinical triggers if a modal test dialog is currently active
         from PySide6.QtWidgets import QApplication
         active_window = QApplication.activeModalWidget()
@@ -1749,6 +1802,8 @@ class MainWindow(QMainWindow):
         self.current_patient_id = None
         if hasattr(self, 'cockpit_widget') and self.cockpit_widget:
             self.cockpit_widget.reset_session()
+        if hasattr(self, 'camera_thread') and self.camera_thread:
+            self.camera_thread.resume_barcode_scanning()
         if hasattr(self, 'txt_patient_id'):
             self.txt_patient_id.clear()
         if hasattr(self, 'txt_patient_name'):
@@ -1772,9 +1827,16 @@ class MainWindow(QMainWindow):
 
     @Slot(QImage)
     def update_camera_frame(self, image):
+        if not hasattr(self, 'camera_feed') or self.camera_feed is None:
+            return
+        if hasattr(self, 'cockpit_widget') and self.cockpit_widget and not self.cockpit_widget.is_session_open:
+            return
+        feed_size = self.camera_feed.size()
+        if feed_size.width() <= 5 or feed_size.height() <= 5:
+            return
         pixmap = QPixmap.fromImage(image)
         scaled_pixmap = pixmap.scaled(
-            self.camera_feed.size(), 
+            feed_size, 
             Qt.KeepAspectRatio, 
             Qt.SmoothTransformation
         )
@@ -1934,13 +1996,22 @@ class MainWindow(QMainWindow):
         print(f"📸 [CAPTURE_TRACE]: Received capture request from '{source}' for Patient ID: '{self.current_patient_id}'")
         
         if not self.current_patient_id:
-            self.lbl_scan_status.setText("⚠️ VUI LÒNG QUÉT MÃ VẠCH BỆNH NHÂN TRƯỚC KHI CHỤP!")
-            self.lbl_scan_status.setStyleSheet("color: #ef4444; font-weight: bold; font-size: 14px; padding: 4px; background-color: #450a0a; border-radius: 4px;")
-            try:
-                QApplication.beep()
-            except Exception:
-                pass
-            return
+            p_id = ""
+            if hasattr(self, 'cockpit_widget') and self.cockpit_widget:
+                p_id = self.cockpit_widget.input_id.text().strip()
+            if p_id:
+                self.current_patient_id = p_id
+                if hasattr(self, 'camera_thread') and self.camera_thread:
+                    self.camera_thread.set_active_patient(p_id)
+            else:
+                self.lbl_scan_status.setText("⚠️ VUI LÒNG QUÉT MÃ QR HOẶC NHẬP MÃ BỆNH NHÂN TRƯỚC KHI CHỤP!")
+                self.lbl_scan_status.setStyleSheet("color: #ef4444; font-weight: bold; font-size: 14px; padding: 4px; background-color: #450a0a; border-radius: 4px;")
+                self.status_bar.showMessage("⚠️ Vui lòng quét mã QR hoặc nhập Mã bệnh nhân trước khi chụp!", 4000)
+                try:
+                    QApplication.beep()
+                except Exception:
+                    pass
+                return
 
         total, used, free = shutil.disk_usage(config.BASE_DIR)
         free_mb = free / (1024 * 1024)
@@ -1962,81 +2033,103 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"Đã lưu: {filename} ({latency_ms:.1f}ms)", 3000)
 
     def load_patient_photos(self):
-        while self.grid_layout.count():
-            item = self.grid_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-                
+        # Clear old grid layout if present
+        if hasattr(self, 'grid_layout') and self.grid_layout:
+            while self.grid_layout.count():
+                item = self.grid_layout.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+
+        # Clear cockpit filmstrip layout
+        if hasattr(self, 'cockpit_widget') and self.cockpit_widget and hasattr(self.cockpit_widget, 'filmstrip_layout'):
+            for i in reversed(range(self.cockpit_widget.filmstrip_layout.count())):
+                w = self.cockpit_widget.filmstrip_layout.itemAt(i).widget()
+                if w:
+                    w.setParent(None)
+
         if not self.current_patient_id:
-            self.lbl_baseline_photo.setText("Chưa có ảnh đối chiếu")
+            if hasattr(self, 'lbl_baseline_photo') and self.lbl_baseline_photo:
+                self.lbl_baseline_photo.setText("Chưa có ảnh đối chiếu")
             return
 
         photos = database.get_patient_photos(self.current_patient_id)
         all_photo_paths = [str(database.get_full_photo_path(p["file_path"])) for p in photos if database.get_full_photo_path(p["file_path"])]
         
-        # Load Photo 1 into Split-screen Baseline View on the Right (if not custom set)
+        # Baseline Photo on the Right (Photo #1 / First baseline photo)
         if photos and not hasattr(self, 'custom_baseline_path'):
             baseline_path = database.get_full_photo_path(photos[0]["file_path"])
-            if baseline_path and baseline_path.exists():
+            if baseline_path and baseline_path.exists() and hasattr(self, 'lbl_baseline_photo') and self.lbl_baseline_photo:
                 pix = QPixmap(str(baseline_path))
                 scaled = pix.scaled(self.lbl_baseline_photo.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 self.lbl_baseline_photo.setPixmap(scaled)
 
-        for idx, photo in enumerate(photos):
-            item_widget = QWidget()
-            item_layout = QVBoxLayout(item_widget)
-            item_layout.setContentsMargins(2, 2, 2, 2)
-            
-            lbl_thumb = QLabel()
-            lbl_thumb.setFixedSize(110, 85)
-            lbl_thumb.setStyleSheet("border: 1px solid #334155; background-color: #020617;")
-            
-            img_path = database.get_full_photo_path(photo["file_path"])
-            if img_path and img_path.exists():
-                pix = QPixmap(str(img_path))
-                lbl_thumb.setPixmap(pix.scaled(lbl_thumb.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            
-            lbl_title = QLabel(os.path.basename(photo["file_path"])[-12:])
-            lbl_title.setStyleSheet("font-size: 10px; color: #94a3b8;")
-            lbl_title.setAlignment(Qt.AlignCenter)
-            
-            item_layout.addWidget(lbl_thumb)
-            item_layout.addWidget(lbl_title)
-            
+        # Sort photos from NEWEST to OLDEST (ảnh gần nhất -> xa nhất)
+        sorted_photos = list(reversed(photos))
+        
+        if hasattr(self, 'cockpit_widget') and self.cockpit_widget:
+            self.cockpit_widget.lbl_filmstrip.setText(f"Filmstrip Ảnh Ca Khám ({len(photos)} ảnh - Mới nhất ➜ Cũ nhất):")
+
+        for idx, photo in enumerate(sorted_photos):
             photo_id = photo["id"]
-            photo_idx = idx
-            
-            def make_context_menu(p_id, path, current_idx):
+            photo_orig_idx = photos.index(photo)
+            img_path = database.get_full_photo_path(photo["file_path"])
+            num_label = f"#{len(photos) - idx}"
+
+            def create_thumb_card(is_cockpit=True):
+                item_widget = QWidget()
+                item_layout = QVBoxLayout(item_widget)
+                item_layout.setContentsMargins(2, 2, 2, 2)
+                item_layout.setSpacing(2)
+                
+                lbl_thumb = QLabel()
+                lbl_thumb.setFixedSize(85, 60)
+                lbl_thumb.setCursor(Qt.PointingHandCursor)
+                lbl_thumb.setStyleSheet("border: 1.5px solid #0284c7; border-radius: 4px; background-color: #020617;")
+                
+                if img_path and img_path.exists():
+                    pix = QPixmap(str(img_path))
+                    lbl_thumb.setPixmap(pix.scaled(lbl_thumb.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                
+                lbl_title = QLabel(num_label)
+                lbl_title.setStyleSheet("font-size: 10px; color: #38bdf8; font-weight: bold;")
+                lbl_title.setAlignment(Qt.AlignCenter)
+                
+                item_layout.addWidget(lbl_thumb)
+                item_layout.addWidget(lbl_title)
+                
                 def custom_context(pos):
                     menu = QMenu()
                     open_act = menu.addAction("👁️ Xem ảnh phóng to")
-                    set_baseline_act = menu.addAction("📌 Đặt làm Ảnh đối chiếu đợt 1")
+                    set_baseline_act = menu.addAction("📌 Đặt làm Ảnh đối chiếu Baseline")
                     del_act = menu.addAction("🗑️ Xóa ảnh này")
                     action = menu.exec_(lbl_thumb.mapToGlobal(pos))
                     if action == open_act:
-                        hardware_test_dialogs.show_image_preview(self, photo_paths=all_photo_paths, current_index=current_idx)
+                        hardware_test_dialogs.show_image_preview(self, photo_paths=all_photo_paths, current_index=photo_orig_idx)
                     elif action == set_baseline_act:
-                        if path and path.exists():
-                            pix = QPixmap(str(path))
+                        if img_path and img_path.exists():
+                            pix = QPixmap(str(img_path))
                             scaled = pix.scaled(self.lbl_baseline_photo.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
                             self.lbl_baseline_photo.setPixmap(scaled)
-                            self.status_bar.showMessage(f"Đã đặt {path.name} làm ảnh đối chiếu góc đợt 1.", 4000)
+                            self.status_bar.showMessage(f"Đã đặt {img_path.name} làm ảnh đối chiếu đợt 1.", 4000)
                     elif action == del_act:
                         reply = QMessageBox.question(
                             self, "Xác nhận xóa", "Bạn có chắc chắn muốn xóa ảnh này?",
                             QMessageBox.Yes | QMessageBox.No
                         )
                         if reply == QMessageBox.Yes:
-                            database.delete_photo(p_id, operator_name=self.active_operator_name)
+                            database.delete_photo(photo_id, operator_name=self.active_operator_name)
                             self.load_patient_photos()
-                return custom_context
 
-            lbl_thumb.setContextMenuPolicy(Qt.CustomContextMenu)
-            lbl_thumb.customContextMenuRequested.connect(make_context_menu(photo_id, img_path, photo_idx))
-            lbl_thumb.mousePressEvent = lambda e, p_idx=photo_idx: hardware_test_dialogs.show_image_preview(self, photo_paths=all_photo_paths, current_index=p_idx) if e.button() == Qt.LeftButton else None
-            
-            self.grid_layout.addWidget(item_widget)
+                lbl_thumb.setContextMenuPolicy(Qt.CustomContextMenu)
+                lbl_thumb.customContextMenuRequested.connect(custom_context)
+                lbl_thumb.mousePressEvent = lambda e, p_idx=photo_orig_idx: hardware_test_dialogs.show_image_preview(self, photo_paths=all_photo_paths, current_index=p_idx) if e.button() == Qt.LeftButton else None
+                return item_widget
+
+            if hasattr(self, 'cockpit_widget') and self.cockpit_widget and hasattr(self.cockpit_widget, 'filmstrip_layout'):
+                self.cockpit_widget.filmstrip_layout.addWidget(create_thumb_card(is_cockpit=True))
+            if hasattr(self, 'grid_layout') and self.grid_layout:
+                self.grid_layout.addWidget(create_thumb_card(is_cockpit=False))
 
     def save_patient_info(self):
         if not self.current_patient_id:
@@ -2171,7 +2264,10 @@ class MainWindow(QMainWindow):
 
     def keyPressEvent(self, event):
         key = event.key()
-        modifiers = event.modifiers()
+        if key == Qt.Key_F1:
+            if hasattr(self, 'cockpit_widget') and self.cockpit_widget:
+                self.cockpit_widget.on_start_session()
+            return
         if hasattr(self, 'multimodal_dispatcher') and self.multimodal_dispatcher:
             self.multimodal_dispatcher.handle_key_event(key)
         super().keyPressEvent(event)

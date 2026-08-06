@@ -28,7 +28,10 @@ class TestPatientSearch(unittest.TestCase):
         conn.close()
 
     def tearDown(self):
-        self.tmp_dir.cleanup()
+        try:
+            self.tmp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_search_with_optional_filters(self):
         service = PatientSearchService(db_path=self.db_file)

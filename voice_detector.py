@@ -44,7 +44,47 @@ def _find_sherpa_model_dir() -> Path | None:
 
     for p in candidates:
         if p.exists() and (p / "tokens.txt").exists():
+            logger.info(f"[VOICE] Found model directory at: {p}")
             return p
+    logger.warning(f"[VOICE] Model directory not found in candidate paths: {[str(c) for c in candidates]}")
+    return None
+
+
+def _auto_download_sherpa_model() -> Path | None:
+    """Attempt to download and extract sherpa-onnx model if missing."""
+    import urllib.request
+    import tarfile
+    import shutil
+
+    app_dir = Path(__file__).parent
+    models_dir = app_dir / "models"
+    models_dir.mkdir(exist_ok=True)
+    target_dir = models_dir / SHERPA_MODEL_DIR_NAME
+    url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-vi-30M-int8-2026-02-09.tar.bz2"
+    archive_path = models_dir / "sherpa-onnx-zipformer-vi-30M-int8-2026-02-09.tar.bz2"
+
+    try:
+        logger.info(f"[VOICE] Auto-downloading sherpa-onnx model from {url}...")
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=30) as response, open(archive_path, 'wb') as out_file:
+            shutil.copyfileobj(response, out_file)
+        
+        with tarfile.open(archive_path, "r:bz2") as tar:
+            tar.extractall(path=models_dir)
+        
+        if archive_path.exists():
+            archive_path.unlink()
+        
+        if target_dir.exists() and (target_dir / "tokens.txt").exists():
+            logger.info(f"[VOICE] Auto-downloaded model successfully to {target_dir}")
+            return target_dir
+    except Exception as e:
+        logger.warning(f"[VOICE] Auto-download model failed: {e}")
+        if archive_path.exists():
+            try:
+                archive_path.unlink()
+            except Exception:
+                pass
     return None
 
 
@@ -98,6 +138,8 @@ class VoiceDetectorThread(QThread):
     log_signal = Signal(str)
     error_signal = Signal(str)
     download_progress = Signal(int)
+    comparison_signal = Signal(str, str, float) # local_text, google_text, similarity_percent
+    patient_info_signal = Signal(dict)          # Emits parsed patient demographic dict
 
     # Vietnamese clinical voice commands
     KEYWORDS = [
@@ -118,6 +160,8 @@ class VoiceDetectorThread(QThread):
         self.pyaudio_instance = None
         self.last_trigger_time = 0
         self.cooldown_active = False
+        self._pending_field = None      # e.g. 'full_name', 'birth_year', 'gender'
+        self._pending_field_time = 0    # timestamp when pending was set (expires after 8s)
 
     def stop(self):
         self._stop = True
@@ -127,7 +171,7 @@ class VoiceDetectorThread(QThread):
     # ---------- sherpa-onnx recognizer factory ----------
 
     def _create_recognizer(self, model_dir: Path):
-        """Create a sherpa_onnx.OnlineRecognizer from local Zipformer Transducer model."""
+        """Create a sherpa_onnx.OfflineRecognizer from local Zipformer Transducer model."""
         import sherpa_onnx
 
         encoder = str(model_dir / "encoder.int8.onnx")
@@ -135,7 +179,7 @@ class VoiceDetectorThread(QThread):
         joiner = str(model_dir / "joiner.int8.onnx")
         tokens = str(model_dir / "tokens.txt")
 
-        recognizer = sherpa_onnx.OnlineRecognizer.from_transducer(
+        recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
             encoder=encoder,
             decoder=decoder,
             joiner=joiner,
@@ -143,10 +187,6 @@ class VoiceDetectorThread(QThread):
             num_threads=2,
             sample_rate=16000,
             feature_dim=80,
-            enable_endpoint_detection=True,
-            rule1_min_trailing_silence=2.4,
-            rule2_min_trailing_silence=1.2,
-            rule3_min_utterance_length=20,
             provider="cpu",
         )
         return recognizer
@@ -159,6 +199,11 @@ class VoiceDetectorThread(QThread):
         # 1. Find model
         model_dir = _find_sherpa_model_dir()
         if model_dir is None:
+            logger.info("[VOICE] Model directory missing, attempting auto-download...")
+            self.status_signal.emit("Đang tải model Voice AI...")
+            model_dir = _auto_download_sherpa_model()
+
+        if model_dir is None:
             self.status_signal.emit("Model missing")
             self.error_signal.emit(f"Không tìm thấy thư mục model '{SHERPA_MODEL_DIR_NAME}' trong models/ hoặc %APPDATA%.")
             logger.error(f"[VOICE] sherpa-onnx model directory not found: {SHERPA_MODEL_DIR_NAME}")
@@ -168,6 +213,7 @@ class VoiceDetectorThread(QThread):
         try:
             import sherpa_onnx
             import pyaudio
+            import numpy as np
         except ImportError as e:
             logger.error(f"Required voice libs not imported: {e}")
             self.error_signal.emit(f"Library missing: {e}")
@@ -217,8 +263,10 @@ class VoiceDetectorThread(QThread):
                     time.sleep(2.0)
                     continue
 
-                # Create a new stream for this session
-                stream = recognizer.create_stream()
+                # Audio buffer for streaming decode (16kHz samples)
+                audio_buffer = []
+                silence_chunks = 0
+                has_speech = False
 
                 # 5. Read audio loop
                 while not self._stop:
@@ -248,26 +296,41 @@ class VoiceDetectorThread(QThread):
                     current_vol = max(raw_vol, int(current_vol * 0.8))
                     self.volume_signal.emit(current_vol)
 
-                    # Feed audio to sherpa-onnx (expects float32 samples in [-1, 1])
-                    import numpy as np
+                    # Feed audio buffer (float32 [-1, 1])
                     samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
-                    stream.accept_waveform(16000, samples.tolist())
+                    audio_buffer.extend(samples)
 
-                    while recognizer.is_ready(stream):
-                        recognizer.decode_stream(stream)
+                    if raw_vol < 10:
+                        silence_chunks += 1
+                    else:
+                        silence_chunks = 0
+                        has_speech = True
 
-                    text = recognizer.get_result(stream).text.strip().lower()
-
-                    if text:
-                        self.log_signal.emit(f"🎙️ [sherpa-onnx]: \"{text}\"")
-
-                    # Check endpoint (utterance boundary)
-                    if recognizer.is_endpoint(stream):
-                        if text:
-                            self.log_signal.emit(f"💬 [KẾT QUẢ]: \"{text}\"")
-                            self._match_keywords(text)
-                        # Reset stream for next utterance
-                        stream = recognizer.create_stream()
+                    # Decode ONLY when actual speech occurred and silence boundary or max buffer reached
+                    if len(audio_buffer) >= 12000 and (silence_chunks >= 4 or len(audio_buffer) >= 48000):
+                        try:
+                            if has_speech:
+                                stream = recognizer.create_stream()
+                                stream.accept_waveform(16000, np.array(audio_buffer, dtype=np.float32))
+                                recognizer.decode_stream(stream)
+                                text = stream.result.text.strip().lower()
+                                
+                                # Filter out noise hallucinations (common single-syllable noise artifacts)
+                                if text and text not in ("đấy", "đây", "ừ", "à", "ơi", "thấy", "tái"):
+                                    logger.info(f"[VOICE_TEXT] Recognized raw text: '{text}'")
+                                    self.log_signal.emit(f"💬 [sherpa-onnx]: \"{text}\"")
+                                    kw_matched = self._match_keywords(text)
+                                    self._async_compare_google_voice(list(audio_buffer), text)
+                                    if not kw_matched:
+                                        self._process_voice_for_patient(text)
+                                else:
+                                    logger.debug(f"[VOICE_HALLUCINATION_FILTERED] Discarded noise artifact: '{text}'")
+                        except Exception as dec_err:
+                            logger.warning(f"[VOICE_DECODE_ERR] {dec_err}")
+                        finally:
+                            audio_buffer.clear()
+                            silence_chunks = 0
+                            has_speech = False
 
                     # Cooldown reset
                     if self.cooldown_active and (time.time() - self.last_trigger_time > 2.0):
@@ -282,12 +345,64 @@ class VoiceDetectorThread(QThread):
 
         self.cleanup()
 
+    # ---------- Patient voice processing with pending field state ----------
+
+    def _process_voice_for_patient(self, text: str):
+        """
+        Process recognized text for patient demographic input.
+        Supports 2-step input: keyword first (e.g. "họ và tên"), then value (e.g. "Lương Thế Vinh").
+        """
+        try:
+            from src.patient_voice_parser import (
+                parse_patient_speech, detect_pending_field, fill_pending_field,
+                _viet_words_to_digits
+            )
+
+            # Convert Vietnamese digit words to numbers
+            converted_text = _viet_words_to_digits(text)
+
+            # Step A: Check if there's a pending field from a previous keyword-only utterance
+            if self._pending_field and (time.time() - self._pending_field_time < 8.0):
+                pending = self._pending_field
+                self._pending_field = None  # Clear pending state
+                p_info = fill_pending_field(pending, converted_text)
+                if p_info:
+                    logger.info(f"[VOICE_PENDING_FILLED] Field '{pending}' filled with '{converted_text}': {p_info}")
+                    self.log_signal.emit(f"✅ [ĐIỀN TRƯỜNG]: {pending} ← \"{converted_text}\"")
+                    self.patient_info_signal.emit(p_info)
+                    return
+                else:
+                    logger.info(f"[VOICE_PENDING_MISMATCH] Pending '{pending}' but text '{converted_text}' doesn't fit. Trying normal parse...")
+                    # Fall through to normal parsing
+            else:
+                # Clear expired pending
+                self._pending_field = None
+
+            # Step B: Try normal parse (single-field keyword+data or full sentence)
+            p_info = parse_patient_speech(converted_text)
+            if p_info:
+                logger.info(f"[VOICE_PATIENT_PARSED] Extracted Patient Info: {p_info}")
+                self.patient_info_signal.emit(p_info)
+                return
+
+            # Step C: Check if this is a keyword-only utterance → set pending field
+            pending = detect_pending_field(converted_text)
+            if pending:
+                self._pending_field = pending
+                self._pending_field_time = time.time()
+                logger.info(f"[VOICE_PENDING_SET] Waiting for next utterance to fill field: '{pending}'")
+                self.log_signal.emit(f"⏳ [CHỜ NHẬP]: {pending.upper().replace('_', ' ')}... (nói tiếp nội dung)")
+                return
+
+        except Exception as p_err:
+            logger.warning(f"[PATIENT_VOICE_PARSE_ERR] {p_err}")
+
     # ---------- Keyword matching ----------
 
-    def _match_keywords(self, text: str):
+    def _match_keywords(self, text: str) -> bool:
         """Match recognized text against Vietnamese command keywords."""
         if self.cooldown_active:
-            return
+            return False
 
         # Try exact substring match (longest match first)
         sorted_kw = sorted(self.KEYWORDS, key=len, reverse=True)
@@ -298,21 +413,66 @@ class VoiceDetectorThread(QThread):
                 self.keyword_signal.emit(kw)
                 self.cooldown_active = True
                 self.last_trigger_time = time.time()
-                return
+                return True
 
         # Optional: fuzzy match fallback (requires rapidfuzz)
         try:
             from rapidfuzz import fuzz
             for kw in sorted_kw:
-                if fuzz.partial_ratio(kw, text) >= 75:
-                    logger.info(f"[VOICE_KEYWORD_FUZZY] Fuzzy matched: '{kw}' ~ '{text}'")
-                    self.log_signal.emit(f"✅ [KHỚP GẦN ĐÚNG]: \"{kw.upper()}\" (fuzzy)")
+                # Short keywords (<= 4 chars) require exact match or ratio >= 85 to prevent noise mis-triggers
+                if len(kw) <= 4:
+                    if kw in text.split():
+                        score = 100
+                    else:
+                        score = fuzz.ratio(kw, text)
+                else:
+                    score = max(fuzz.ratio(kw, text), fuzz.partial_ratio(kw, text))
+                    
+                if score >= 85:
+                    logger.info(f"[VOICE_KEYWORD_FUZZY] Fuzzy matched: '{kw}' ~ '{text}' (score: {score})")
+                    self.log_signal.emit(f"✅ [KHỚP GẦN ĐÚNG]: \"{kw.upper()}\" ({score}%)")
                     self.keyword_signal.emit(kw)
                     self.cooldown_active = True
                     self.last_trigger_time = time.time()
-                    return
+                    return True
         except ImportError:
             pass  # rapidfuzz optional — exact match only
+        return False
+
+    def _async_compare_google_voice(self, pcm_float32_samples: list, local_text: str):
+        """Asynchronously send audio buffer to Google Speech API for ASR comparison."""
+        import threading
+
+        def run_google():
+            try:
+                import io
+                import wave
+                import numpy as np
+                import speech_recognition as sr
+                from rapidfuzz import fuzz
+
+                pcm_int16 = (np.array(pcm_float32_samples) * 32767).clip(-32768, 32767).astype(np.int16)
+                wav_io = io.BytesIO()
+                with wave.open(wav_io, 'wb') as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(16000)
+                    wf.writeframes(pcm_int16.tobytes())
+                wav_io.seek(0)
+
+                r = sr.Recognizer()
+                with sr.AudioFile(wav_io) as source:
+                    audio = r.record(source)
+
+                google_text = r.recognize_google(audio, language="vi-VN").strip().lower()
+                similarity = float(fuzz.ratio(local_text, google_text))
+                logger.info(f"[VOICE_COMPARE] Offline: '{local_text}' | Google Voice: '{google_text}' | Accuracy Match: {similarity:.1f}%")
+                self.log_signal.emit(f"🌐 [Google Voice]: \"{google_text}\" (Tương đồng: {similarity:.0f}%)")
+                self.comparison_signal.emit(local_text, google_text, similarity)
+            except Exception as e:
+                logger.debug(f"[GOOGLE_VOICE_SKIP] {e}")
+
+        threading.Thread(target=run_google, daemon=True).start()
 
     # ---------- Mic resolution ----------
 

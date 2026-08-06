@@ -9,6 +9,8 @@ datas = []
 
 if os.path.exists('config.json'):
     datas.append(('config.json', '.'))
+if os.path.exists('models'):
+    datas.append(('models', 'models'))
 
 a = Analysis(
     ['main.py'],
