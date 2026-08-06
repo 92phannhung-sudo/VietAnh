@@ -32,6 +32,9 @@ import database
 import barcode_parser
 import action_registry
 import voice_detector
+from src.patient_search_service import PatientSearchService
+from src.multimodal_dispatcher import MultiModalDispatcher, ActionType
+from src.ui_clinical_cockpit import ClinicalCockpitWidget
 from pedal_gesture_fsm import PedalGestureFSM
 from voice_detector import VoiceDetectorThread
 from updater import UpdateCheckerThread
@@ -513,6 +516,9 @@ class MainWindow(QMainWindow):
         self.active_operator_id = self.app_config.get("active_operator_id", "NV001")
         self.active_operator_name = "BS. Nguyễn Văn A"
         self.keyboard_hotkey_registered = False
+
+        self.patient_search_service = PatientSearchService()
+        self.multimodal_dispatcher = MultiModalDispatcher()
 
         # Apply initial theme QSS
         self.apply_theme(self.app_config.get("active_theme", "dark"))
@@ -2073,66 +2079,8 @@ class MainWindow(QMainWindow):
 
     def keyPressEvent(self, event):
         key = event.key()
-        modifiers = event.modifiers()
-        
-        # Trace key press events for diagnostics
-        logger.info(f"[KEY_EVENT_TRACE] Key pressed code: {key}")
-        print(f"⌨️ [KEY_TRACE]: Key Pressed = {key}")
-        
-        # Fail-safe backup for Pedal FSM
-        if hasattr(self, 'pedal_fsm') and self.pedal_fsm:
-            target = self.app_config.get("trigger_key", "f13").lower()
-            if (key == Qt.Key_F13 and target == "f13") or (key == Qt.Key_F12 and target == "f12"):
-                self.pedal_fsm.process_raw_key(target, "down")
-                self.pedal_fsm.process_raw_key(target, "up")
-
-        # F1-F4: Switch Tabs
-        if key == Qt.Key_F1:
-            self.switch_tab(0)
-            return
-        elif key == Qt.Key_F2:
-            self.switch_tab(1)
-            return
-        elif key == Qt.Key_F3:
-            self.switch_tab(2)
-            return
-        elif key == Qt.Key_F4:
-            self.switch_tab(3)
-            return
-        elif key in (Qt.Key_F13, Qt.Key_F12, Qt.Key_F5, Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter):
-            self.trigger_photo_capture(source=f"KEYBOARD_PEDAL_{key}")
-            return
-        elif key == Qt.Key_F6 or key == Qt.Key_Delete:
-            self.delete_latest_photo()
-            return
-        elif key == Qt.Key_F7 or (modifiers == Qt.ControlModifier and key == Qt.Key_N):
-            self.reset_active_patient()
-            return
-        elif key == Qt.Key_F8 or (modifiers == Qt.ControlModifier and key == Qt.Key_O):
-            self.open_latest_photo_preview()
-            return
-        elif key == Qt.Key_F10 or (modifiers == Qt.ControlModifier and key == Qt.Key_P):
-            self.export_patient_report()
-            return
-        elif key == Qt.Key_F11:
-            if self.isFullScreen():
-                self.showNormal()
-            else:
-                self.showFullScreen()
-            return
-        elif modifiers == Qt.ControlModifier and key == Qt.Key_F:
-            self.switch_tab(1)
-            self.txt_search.setFocus()
-            self.txt_search.selectAll()
-            return
-        elif key == Qt.Key_Backspace:
-            if self.stack.currentIndex() == 1 and hasattr(self, 'tab2_stack') and self.tab2_stack.currentIndex() == 1:
-                self.show_level1_folders()
-                return
-        elif key == Qt.Key_Escape:
-            self.confirm_exit_app()
-            return
-
+        if hasattr(self, 'multimodal_dispatcher') and self.multimodal_dispatcher:
+            self.multimodal_dispatcher.handle_key_event(key)
         super().keyPressEvent(event)
 
     def confirm_exit_app(self):
