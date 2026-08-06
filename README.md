@@ -34,6 +34,8 @@ Toàn bộ tài liệu thiết kế và vận hành theo quy chuẩn SDLC đư�
    * Mô tả sơ đồ kiến trúc 4 Tab Sidebar, sơ đồ các mô-đun Python, Lược đồ CSDL SQLite (`patients`, `staff`, `staff_action_mappings`, `hardware_devices`, `photos`, `audit_logs`), và cấu trúc thư mục lưu trữ.
 4. 📖 **[docs/USER_GUIDE.md](docs/USER_GUIDE.md)**
    * Hướng dẫn chi tiết dành cho Bác sĩ & Quản trị viên IT: Quy trình chụp ảnh màn hình đôi (Split-screen), xem/xóa ảnh, chọn người thao tác ca trực, xuất báo cáo PDF, Quét chẩn đoán phần cứng bất đồng bộ với bảng Loading Progress Modal, và xử lý sự cố.
+5. 💻 **[docs/WINDOWS_SETUP.md](docs/WINDOWS_SETUP.md)**
+   * Hướng dẫn cài đặt và chạy trên Windows 10/11: Cài Python, tạo venv, cài thư viện (PyAudio, pyzbar, Vosk), tải mô hình AI giọng nói, đóng gói bản cài đặt offline (PyInstaller), triển khai USB tại máy trạm bệnh viện, xử lý sự cố.
 
 ---
 
