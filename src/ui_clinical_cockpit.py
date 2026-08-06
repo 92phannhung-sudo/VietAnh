@@ -12,6 +12,7 @@ class ClinicalCockpitWidget(QWidget):
     complete_session_requested = Signal()
     capture_requested = Signal()
     delete_last_requested = Signal()
+    patient_loaded = Signal(dict)
 
     def __init__(self, search_service: PatientSearchService, dispatcher: MultiModalDispatcher, parent=None):
         super().__init__(parent)
@@ -147,6 +148,7 @@ class ClinicalCockpitWidget(QWidget):
         self.input_gender.setText(patient_data.get("gender", ""))
         self.baseline_label.setText(f"[Ảnh Baseline BN: {patient_data.get('patient_id')}]")
         self.validate_inputs()
+        self.patient_loaded.emit(patient_data)
 
     def on_start_session(self):
         self.start_session_requested.emit()
