@@ -1,11 +1,33 @@
 import os
 import json
+import sys
 from pathlib import Path
 
 __version__ = "1.0.0"
 
+
+def get_user_data_dir() -> Path:
+    """App data root: %APPDATA% on Windows, ~/Library/Application Support on macOS."""
+    override = os.getenv("PATIENT_CAPTURE_DATA_DIR")
+    if override:
+        return Path(override).expanduser()
+
+    if sys.platform == "win32":
+        appdata = os.getenv("APPDATA")
+        if appdata:
+            return Path(appdata) / "PatientCaptureApp"
+
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "PatientCaptureApp"
+
+    xdg = os.getenv("XDG_DATA_HOME")
+    if xdg:
+        return Path(xdg) / "PatientCaptureApp"
+    return Path.home() / ".local" / "share" / "PatientCaptureApp"
+
+
 # Base Data Directory
-BASE_DIR = Path(os.getenv("APPDATA")) / "PatientCaptureApp"
+BASE_DIR = get_user_data_dir()
 BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 # Data Paths
@@ -17,7 +39,6 @@ LOGS_DIR = BASE_DIR / "logs"
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 LOG_PATH = LOGS_DIR / "app.log"
 
-import sys
 
 def get_app_dir():
     if getattr(sys, 'frozen', False):
