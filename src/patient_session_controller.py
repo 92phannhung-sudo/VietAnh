@@ -354,11 +354,13 @@ class PatientSessionController:
         if self._phase != Phase.READY or not self._demo.gate_complete():
             self._notice = "Chưa đủ hồ sơ để bắt đầu chụp"
             return [Effect.WARN]
+        effects: list[Effect] = []
         if self._search.open:
             self._search = replace(self._search, open=False)
+            effects.append(Effect.CLOSE_SEARCH_GRID)
         self._phase = Phase.LOCKED_CAPTURE
         self._correction_fields = frozenset()
-        return []
+        return effects
 
     def _on_capture_request(self) -> list[Effect]:
         if self._phase != Phase.LOCKED_CAPTURE:
@@ -415,9 +417,10 @@ class PatientSessionController:
                 self._notice = "Không đổi Mã BN trong Correction"
                 return [Effect.WARN]
             self._apply_field(event.field, event.value)
-            # auto re-lock when edited field has value
-            self._phase = Phase.LOCKED_CAPTURE
-            self._correction_fields = frozenset()
+            remaining = self._correction_fields - {event.field}
+            self._correction_fields = remaining
+            if not remaining:
+                self._phase = Phase.LOCKED_CAPTURE
             return []
         # Intake / Ready
         self._apply_field(event.field, event.value)

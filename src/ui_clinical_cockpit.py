@@ -66,7 +66,6 @@ class ClinicalCockpitWidget(QWidget):
 
         for inp in (self.input_id, self.input_name, self.input_birth, self.input_gender):
             inp.setStyleSheet("background-color: #1e293b; color: #f8fafc; border: 1px solid #334155; padding: 6px; border-radius: 4px;")
-            inp.textChanged.connect(self.validate_inputs)
             banner_layout.addWidget(inp)
 
         self.btn_search = QPushButton("🔍 F5 Tìm hồ sơ")
@@ -198,20 +197,19 @@ class ClinicalCockpitWidget(QWidget):
             self.camera_label.setText("⏸️ HỆ THỐNG ĐANG Ở CHẾ ĐỘ CHỜ (KẾT THÚC PHIÊN)\n\n[Bàn đạp, Giọng nói và Camera tạm dừng]\n[BẤM F1 ĐỂ MỞ ĐẦU PHIÊN KHÁM MỚI]")
 
     def validate_inputs(self):
+        """Legacy banner border hint only — badge/phase come from apply_session_view."""
         if not self.is_session_open:
             return
         p_id = self.input_id.text().strip()
         p_name = self.input_name.text().strip()
-        valid = bool(p_id) and bool(p_name)
-        
-        if valid:
-            self.lbl_status_badge.setText(f"🔴 ĐANG KHÁM: [{p_id}] - {p_name}")
-            self.lbl_status_badge.setStyleSheet("color: #38bdf8; font-weight: bold; font-size: 13px; padding: 2px 6px; background-color: #0c4a6e; border: 1px solid #0284c7; border-radius: 4px;")
-            self.banner.setStyleSheet("background-color: #0c4a6e; border: 1.5px solid #0284c7; border-radius: 8px; padding: 6px;")
+        if p_id and p_name:
+            self.banner.setStyleSheet(
+                "background-color: #0c4a6e; border: 1.5px solid #0284c7; border-radius: 8px; padding: 6px;"
+            )
         else:
-            self.lbl_status_badge.setText("🟢 ĐÃ MỞ PHIÊN KHÁM: Sẵn sàng quét mã QR hoặc nhập Mã BN để bắt đầu")
-            self.lbl_status_badge.setStyleSheet("color: #22c55e; font-weight: bold; font-size: 13px; padding: 2px 6px; background-color: #052e16; border: 1px solid #16a34a; border-radius: 4px;")
-            self.banner.setStyleSheet("background-color: #0f172a; border: 1.5px solid #334155; border-radius: 8px; padding: 6px;")
+            self.banner.setStyleSheet(
+                "background-color: #0f172a; border: 1.5px solid #334155; border-radius: 8px; padding: 6px;"
+            )
 
     def open_search_grid(self):
         if not self.is_session_open:

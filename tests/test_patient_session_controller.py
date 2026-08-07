@@ -211,6 +211,30 @@ class TestPatientSessionController(unittest.TestCase):
         self.assertEqual(out.view.phase, Phase.LOCKED_CAPTURE)
         self.assertEqual(out.view.affordances.editable, frozenset())
 
+    def test_correction_multi_field_stays_open_until_all_edited(self):
+        self.ctrl.handle(Hotkey("F1"))
+        _fill_gate(self.ctrl)
+        self.ctrl.handle(Hotkey("F2"))
+        self.ctrl.handle(
+            UiUnlock(frozenset({Field.FULL_NAME, Field.BIRTH_YEAR}))
+        )
+        out = self.ctrl.handle(UiFieldEdit(Field.FULL_NAME, "Tran Thi C"))
+        self.assertEqual(out.view.phase, Phase.CORRECTION)
+        self.assertIn(Field.BIRTH_YEAR, out.view.affordances.editable)
+
+        out = self.ctrl.handle(UiFieldEdit(Field.BIRTH_YEAR, 1985))
+        self.assertEqual(out.view.phase, Phase.LOCKED_CAPTURE)
+        self.assertEqual(out.view.demography.birth_year, 1985)
+
+    def test_f2_closes_search_grid(self):
+        self.ctrl.handle(Hotkey("F1"))
+        _fill_gate(self.ctrl)
+        self.ctrl.handle(Hotkey("F5"))
+        out = self.ctrl.handle(Hotkey("F2"))
+        self.assertEqual(out.view.phase, Phase.LOCKED_CAPTURE)
+        self.assertFalse(out.view.search.open)
+        self.assertIn(Effect.CLOSE_SEARCH_GRID, out.effects)
+
     def test_ui_field_edit_ignored_when_locked(self):
         self.ctrl.handle(Hotkey("F1"))
         _fill_gate(self.ctrl)

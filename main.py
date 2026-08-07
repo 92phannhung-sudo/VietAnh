@@ -2428,9 +2428,12 @@ class MainWindow(QMainWindow):
         if not patient_id:
             return
 
-        # Tab 2 browse-only: do not drive session (Task 7 reinforces)
+        # Tab 2 browse-only: filter folder list, do not drive session FSM
         if hasattr(self, "stack") and self.stack.currentIndex() == 1:
-            logger.info("[BARCODE] Tab2 browse filter only — skipped session BarcodeScan")
+            if hasattr(self, "txt_search"):
+                self.txt_search.setText(patient_id)
+            self.load_history_records()
+            logger.info("[BARCODE] Tab2 browse filter id=%s", patient_id)
             return
 
         outcome = self._dispatch_session(BarcodeScan(patient_id))
@@ -2708,32 +2711,30 @@ class MainWindow(QMainWindow):
             # 0. Intercept configured trigger_key from config (supports any key)
             trigger_key_cfg = self.app_config.get("trigger_key", "f13").lower()
             if self._is_trigger_key(key, key_text, trigger_key_cfg):
-                logger.info(f"[EVENT_FILTER_PEDAL] Intercepted configured trigger key: {key} (config='{trigger_key_cfg}')")
-                print(f"🦶 [PEDAL_SUCCESS]: Intercepted Configured Key = {key} (config='{trigger_key_cfg}')")
-                self.trigger_photo_capture(source=f"EVENT_FILTER_PEDAL_{trigger_key_cfg}")
-                return True
-            
-            # 1. Intercept Pedal Function Keys (F13, F12, F5, F14, F15)
-            if key in (Qt.Key_F13, Qt.Key_F12, Qt.Key_F5, Qt.Key_F14, Qt.Key_F15):
-                logger.info(f"[EVENT_FILTER_PEDAL] Intercepted pedal function key: {key}")
-                print(f"🦶 [PEDAL_SUCCESS]: Intercepted Function Key = {key}")
-                self.trigger_photo_capture(source=f"EVENT_FILTER_PEDAL_{key}")
-                return True
-                
-            # 2. Intercept Pedal Modifier Keys (Alt / Meta)
-            if key in (Qt.Key_Alt, Qt.Key_Meta):
-                logger.info(f"[EVENT_FILTER_PEDAL] Intercepted pedal Alt/Meta key: {key}")
-                print(f"🦶 [PEDAL_SUCCESS]: Intercepted Alt Key = {key}")
-                self.trigger_photo_capture(source=f"EVENT_FILTER_ALT_{key}")
+                logger.info(
+                    f"[EVENT_FILTER_PEDAL] → session capture | key={key} config='{trigger_key_cfg}'"
+                )
+                self._dispatch_session(PedalGesture())
                 return True
 
-            # 3. Intercept Space key if focus is not in active text input line
+            # Pedal function keys only (F5 = search hotkey — not pedal)
+            if key in (Qt.Key_F13, Qt.Key_F12, Qt.Key_F14, Qt.Key_F15):
+                logger.info(f"[EVENT_FILTER_PEDAL] → session capture | key={key}")
+                self._dispatch_session(PedalGesture())
+                return True
+
+            # Modifier keys mapped to pedal capture-only
+            if key in (Qt.Key_Alt, Qt.Key_Meta):
+                logger.info(f"[EVENT_FILTER_PEDAL] → session capture | modifier={key}")
+                self._dispatch_session(PedalGesture())
+                return True
+
+            # Space outside text field → session capture (Locked only; domain warns otherwise)
             if key == Qt.Key_Space:
                 focused = QApplication.focusWidget()
                 if not isinstance(focused, QLineEdit):
-                    logger.info("[EVENT_FILTER_PEDAL] Intercepted Space key outside text edit")
-                    print("🦶 [PEDAL_SUCCESS]: Intercepted Space Key outside text edit")
-                    self.trigger_photo_capture(source="EVENT_FILTER_SPACE")
+                    logger.info("[EVENT_FILTER] → session Space capture")
+                    self._dispatch_session(Hotkey("Space"))
                     return True
 
         return super().eventFilter(watched, event)
