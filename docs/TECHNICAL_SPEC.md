@@ -2,6 +2,8 @@
 ## Patient Capture Workstation - 354 Hospital Edition
 **Phiên bản:** v1.0.0 | **Ngày phát hành:** 27/07/2026
 
+> **⚠ SUPERSEDED (session FSM / hotkeys / ASR engine note):** Voice = **sherpa-onnx** (không còn Vosk làm nguồn sự thật). Vòng đời phiên & Design A: `docs/SPEC_HANDS_FREE_SESSION_V1.md`, `docs/PATIENT_SESSION_CONTROLLER_SPEC.md`, ADR `docs/adr/0002-patient-session-controller-single-handle.md`.
+
 ---
 
 ## 1. TỔNG QUAN HỆ THỐNG (SYSTEM OVERVIEW)

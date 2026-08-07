@@ -35,6 +35,24 @@ import voice_detector
 from src.patient_search_service import PatientSearchService
 from src.multimodal_dispatcher import MultiModalDispatcher, ActionType
 from src.ui_clinical_cockpit import ClinicalCockpitWidget
+from src.patient_session_controller import (
+    PatientSessionController,
+    Hotkey,
+    PedalGesture,
+    VoiceUtterance,
+    BarcodeScan,
+    UiFieldEdit,
+    Field,
+    Phase,
+    Demography,
+    LoadRecord,
+    ConfirmNewPatientId,
+    SearchFilterEdit,
+    CloseSearch,
+    LexiconUpdate,
+)
+from src.session_effect_applier import SessionEffectApplier
+from src.voice_lexicon_store import load_lexicon, save_lexicon, default_lexicon_path
 from pedal_gesture_fsm import PedalGestureFSM
 from voice_detector import VoiceDetectorThread
 from updater import UpdateCheckerThread
@@ -623,8 +641,23 @@ class MainWindow(QMainWindow):
         self.active_operator_name = "BS. Nguyễn Văn A"
         self.keyboard_hotkey_registered = False
 
-        self.patient_search_service = PatientSearchService()
+        self.patient_search_service = PatientSearchService(db_path=config.DB_PATH)
+        self.search_service = self.patient_search_service
         self.multimodal_dispatcher = MultiModalDispatcher()
+        self._lexicon_path = default_lexicon_path(config.BASE_DIR)
+        self.session_ctrl = PatientSessionController(lexicon=load_lexicon(self._lexicon_path))
+        self._search_dialog = None
+        self.session_applier = SessionEffectApplier(
+            on_power_on=self._session_power_on,
+            on_power_off=self._session_power_off,
+            on_capture=lambda: self.trigger_photo_capture(source="SESSION_CTRL"),
+            on_delete_last=self.delete_latest_photo,
+            on_open_search=self._session_open_search,
+            on_refresh_search=self._session_refresh_search,
+            on_close_search=self._session_close_search,
+            on_persist_clear=self._session_persist_and_clear,
+            on_warn=self._session_warn,
+        )
 
         # Safe defaults for widgets referenced by legacy handlers
         self.lbl_scan_status = QLabel("")
@@ -637,7 +670,6 @@ class MainWindow(QMainWindow):
         self.lbl_pedal_info = QLabel("")
         self.grid_widget = QWidget()
         self.grid_layout = QHBoxLayout(self.grid_widget)
-        self.search_service = self.patient_search_service
 
         # Apply initial theme QSS
         self.apply_theme(self.app_config.get("active_theme", "dark"))
@@ -760,13 +792,39 @@ class MainWindow(QMainWindow):
             dispatcher=self.multimodal_dispatcher,
             parent=self
         )
-        # Wire cockpit signals to main app handlers
-        self.cockpit_widget.capture_requested.connect(lambda: self.trigger_photo_capture(source="COCKPIT_CAPTURE"))
-        self.cockpit_widget.delete_last_requested.connect(self.delete_latest_photo)
+        # Wire cockpit → PatientSessionController (Design A single door)
+        self.cockpit_widget.capture_requested.connect(
+            lambda: self._dispatch_session(PedalGesture())
+        )
+        self.cockpit_widget.delete_last_requested.connect(
+            lambda: self._dispatch_session(Hotkey("Delete"))
+        )
         self.cockpit_widget.delete_all_requested.connect(self.delete_all_photos)
-        self.cockpit_widget.complete_session_requested.connect(self.reset_active_patient)
-        self.cockpit_widget.start_session_requested.connect(self._on_cockpit_start_session)
+        self.cockpit_widget.complete_session_requested.connect(
+            lambda: self._dispatch_session(Hotkey("F4"))
+        )
+        self.cockpit_widget.start_session_requested.connect(self._request_f1_session)
+        self.cockpit_widget.begin_capture_requested.connect(
+            lambda: self._dispatch_session(Hotkey("F2"))
+        )
         self.cockpit_widget.patient_loaded.connect(self._on_cockpit_patient_loaded)
+        try:
+            self.cockpit_widget.btn_search.clicked.disconnect()
+        except (TypeError, RuntimeError):
+            pass
+        self.cockpit_widget.btn_search.clicked.connect(
+            lambda: self._dispatch_session(Hotkey("F5"))
+        )
+        self.cockpit_widget.input_id.textEdited.connect(
+            lambda t: self._dispatch_session(UiFieldEdit(Field.PATIENT_ID, t.strip() or None))
+        )
+        self.cockpit_widget.input_name.textEdited.connect(
+            lambda t: self._dispatch_session(UiFieldEdit(Field.FULL_NAME, t.strip() or None))
+        )
+        self.cockpit_widget.input_birth.textEdited.connect(self._on_cockpit_birth_edited)
+        self.cockpit_widget.input_gender.textEdited.connect(
+            lambda t: self._dispatch_session(UiFieldEdit(Field.GENDER, t.strip() or None))
+        )
         
         # Keep references for camera frame & voice/pedal status updates
         self.camera_feed = self.cockpit_widget.camera_label
@@ -787,7 +845,24 @@ class MainWindow(QMainWindow):
         # Status Bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-        self.status_bar.showMessage(f"Phiên bản: {config.__version__} | Database: WAL Mode OK | [F1-F11]: Phím tắt nhanh")
+        self.lbl_capture_pill = QLabel("")
+        self.lbl_capture_pill.setStyleSheet(
+            "color: #fbbf24; font-weight: bold; padding: 2px 8px; background-color: #78350f; border-radius: 4px;"
+        )
+        self.lbl_capture_pill.hide()
+        self.status_bar.addPermanentWidget(self.lbl_capture_pill)
+        self.btn_undo_delete = QPushButton("Hoàn tác xóa")
+        self.btn_undo_delete.setVisible(False)
+        self.btn_undo_delete.clicked.connect(self._undo_last_photo_delete)
+        self.status_bar.addPermanentWidget(self.btn_undo_delete)
+        self._pending_undo_photo = None
+        self._undo_timer = QTimer(self)
+        self._undo_timer.setSingleShot(True)
+        self._undo_timer.timeout.connect(self._clear_undo_delete)
+        self.status_bar.showMessage(
+            f"Phiên bản: {config.__version__} | Database: WAL Mode OK | [F1/F2/F4/F5]: Phiên khám"
+        )
+        self._bind_session_view(self.session_ctrl.snapshot())
         
         # Default select Tab 1
         self.switch_tab(0)
@@ -805,44 +880,253 @@ class MainWindow(QMainWindow):
         elif index == 2:
             self.load_staff_and_audit_data()
 
-    def _on_cockpit_start_session(self):
-        """Handle F1: Activate session for patient and enable barcode scanning."""
-        if hasattr(self, 'camera_thread') and self.camera_thread:
-            self.camera_thread.resume_barcode_scanning()
+    def _request_f1_session(self):
+        """F1 with confirm when closing an active session that still has photos (§12.3)."""
+        snap = self.session_ctrl.snapshot()
+        if snap.phase != Phase.STANDBY:
+            photo_count = 0
+            if self.current_patient_id:
+                photo_count = len(database.get_patient_photos(self.current_patient_id) or [])
+            if photo_count > 0:
+                reply = QMessageBox.question(
+                    self,
+                    "Đóng ca khi còn ảnh",
+                    f"Ca còn {photo_count} ảnh. Nên kết thúc bằng F4 (lưu & tắt thiết bị).\n\n"
+                    "Yes = F4 kết thúc phiên\nNo = hủy",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes,
+                )
+                if reply == QMessageBox.Yes:
+                    self._dispatch_session(Hotkey("F4"))
+                return
+        self._dispatch_session(Hotkey("F1"))
 
-        p_id = ""
-        if hasattr(self, 'cockpit_widget') and self.cockpit_widget:
-            p_id = self.cockpit_widget.input_id.text().strip()
-        if p_id:
-            self.current_patient_id = p_id
-            if hasattr(self, 'camera_thread') and self.camera_thread:
-                self.camera_thread.set_active_patient(p_id)
-            self.load_patient_photos()
-            self.status_bar.showMessage(f"🚀 [F1]: Phiên chụp ĐÃ KÍCH HOẠT cho Bệnh nhân: {p_id}", 5000)
-            logger.info(f"[SESSION_F1] Activated session for patient: {p_id}")
-        else:
+    def _dispatch_session(self, event):
+        """Single door: domain handle → effects → bind SessionView."""
+        from src.patient_session_controller import Effect as SessionEffect
+
+        pre = self.session_ctrl.snapshot()
+        outcome = self.session_ctrl.handle(event)
+        if SessionEffect.PERSIST_AND_CLEAR in outcome.effects:
+            self._pending_persist_demo = pre.demography
+        self.session_applier.apply(outcome.effects, outcome.view)
+        self._bind_session_view(outcome.view)
+        return outcome
+
+    def _bind_session_view(self, view):
+        if hasattr(self, "cockpit_widget") and self.cockpit_widget:
+            self.cockpit_widget.apply_session_view(view)
+        demo = view.demography
+        if demo.patient_id:
+            self.current_patient_id = demo.patient_id
+            if hasattr(self, "camera_thread") and self.camera_thread:
+                self.camera_thread.set_active_patient(demo.patient_id)
+            if hasattr(self, "txt_patient_id"):
+                self.txt_patient_id.setText(demo.patient_id)
+            if hasattr(self, "txt_patient_name"):
+                self.txt_patient_name.setText(demo.full_name or "")
+            if hasattr(self, "txt_birth_year"):
+                self.txt_birth_year.setText(
+                    "" if demo.birth_year is None else str(demo.birth_year)
+                )
+        elif view.phase == Phase.STANDBY:
             self.current_patient_id = None
-            if hasattr(self, 'camera_thread') and self.camera_thread:
+            if hasattr(self, "camera_thread") and self.camera_thread:
                 self.camera_thread.set_active_patient(None)
-            self.load_patient_photos()
-            self.status_bar.showMessage("🚀 [F1]: Mở phiên khám mới. Vui lòng quét mã QR hoặc nhập Mã BN...", 5000)
-            logger.info("[SESSION_F1] Reset form and resumed barcode scan for new patient entry")
+        if view.notice and view.phase != Phase.STANDBY:
+            self.status_bar.showMessage(view.notice, 4000)
+        # §12.6 pill visible across tabs while Locked
+        if hasattr(self, "lbl_capture_pill"):
+            if view.phase == Phase.LOCKED_CAPTURE and view.demography.patient_id:
+                self.lbl_capture_pill.setText(
+                    f"Đang ghi ảnh cho: {view.demography.patient_id} — {view.demography.full_name or ''}"
+                )
+                self.lbl_capture_pill.show()
+            else:
+                self.lbl_capture_pill.hide()
+
+    def _on_cockpit_birth_edited(self, text: str):
+        raw = text.strip()
+        if not raw:
+            self._dispatch_session(UiFieldEdit(Field.BIRTH_YEAR, None))
+            return
+        try:
+            year = int(raw)
+        except ValueError:
+            return
+        self._dispatch_session(UiFieldEdit(Field.BIRTH_YEAR, year))
+
+    def _session_power_on(self):
+        if hasattr(self, "camera_thread") and self.camera_thread:
+            self.camera_thread.resume_barcode_scanning()
+        self.status_bar.showMessage(
+            "🚀 [F1]: Phiên đã mở. Quét mã / nhập hồ sơ / F5 tìm kiếm.", 5000
+        )
+        logger.info("[SESSION] Devices powered ON")
+
+    def _session_power_off(self):
+        if hasattr(self, "camera_thread") and self.camera_thread:
+            self.camera_thread.pause_barcode_scanning()
+        logger.info("[SESSION] Devices powered OFF")
+
+    def _session_open_search(self, view):
+        from src.ui_patient_grid import PatientGridDialog
+        from src.patient_session_controller import SearchMode
+
+        filt = view.search.filter
+        mode = "recent"
+        if view.search.mode == SearchMode.FILTERED:
+            mode = "filtered"
+        elif view.search.mode == SearchMode.EMPTY_NEW_PATIENT_PROMPT:
+            mode = "filtered"
+
+        if self._search_dialog is not None:
+            try:
+                self._search_dialog.apply_external_filters(
+                    patient_id=filt.patient_id or "",
+                    full_name=filt.full_name or "",
+                    birth_year=filt.birth_year or "",
+                    gender=filt.gender or "",
+                )
+                self._search_dialog.raise_()
+                self._search_dialog.activateWindow()
+                return
+            except Exception:
+                self._search_dialog = None
+
+        dialog = PatientGridDialog(
+            search_service=self.search_service,
+            parent=self,
+            mode=mode,
+            initial_patient_id=filt.patient_id or "",
+            initial_full_name=filt.full_name or "",
+            initial_birth_year=filt.birth_year or "",
+            initial_gender=filt.gender or "",
+        )
+        dialog.patient_selected.connect(self.on_patient_selected_from_grid)
+        dialog.new_patient_id_confirmed.connect(self._on_new_patient_id_confirmed)
+        dialog.filters_changed.connect(self._on_search_filters_changed)
+        self._search_dialog = dialog
+        dialog.finished.connect(lambda _r: self._on_search_dialog_finished())
+        dialog.open()  # non-blocking so barcode can refresh while open
+        logger.info("[SESSION] OPEN_SEARCH mode=%s id=%s", mode, filt.patient_id)
+
+    def _session_refresh_search(self, view):
+        if self._search_dialog is None:
+            self._session_open_search(view)
+            return
+        filt = view.search.filter
+        self._search_dialog.apply_external_filters(
+            patient_id=filt.patient_id or "",
+            full_name=filt.full_name or "",
+            birth_year=filt.birth_year or "",
+            gender=filt.gender or "",
+        )
+        logger.info("[SESSION] REFRESH_SEARCH filter=%s", filt)
+
+    def _session_close_search(self):
+        if self._search_dialog is not None:
+            dlg = self._search_dialog
+            self._search_dialog = None
+            try:
+                dlg.close()
+            except Exception:
+                pass
+        logger.info("[SESSION] CLOSE_SEARCH")
+
+    def _on_search_dialog_finished(self):
+        self._search_dialog = None
+        # Keep controller search flag in sync if user dismissed without LoadRecord
+        snap = self.session_ctrl.snapshot()
+        if snap.search.open:
+            self._dispatch_session(CloseSearch())
+
+    def _on_search_filters_changed(self, filters: dict):
+        pid = filters.get("patient_id") or None
+        results = self.search_service.search(
+            filters.get("patient_id", ""),
+            filters.get("full_name", ""),
+            filters.get("birth_year", ""),
+            filters.get("gender", ""),
+        )
+        self._dispatch_session(
+            SearchFilterEdit(
+                patient_id=pid,
+                full_name=filters.get("full_name") or None,
+                birth_year=filters.get("birth_year") or None,
+                gender=filters.get("gender") or None,
+                result_count=len(results),
+            )
+        )
+
+    def _on_new_patient_id_confirmed(self, patient_id: str):
+        pid = (patient_id or "").strip()
+        if not pid:
+            return
+        # Ensure filter + 0 hits before ConfirmNewPatientId
+        self._dispatch_session(
+            SearchFilterEdit(patient_id=pid, result_count=0)
+        )
+        self._dispatch_session(ConfirmNewPatientId())
+        self.load_patient_photos()
+        logger.info("[SESSION] ConfirmNewPatientId %s", pid)
+
+    def _session_persist_and_clear(self):
+        demo = getattr(self, "_pending_persist_demo", None)
+        self._pending_persist_demo = None
+        if demo and demo.patient_id:
+            existing = database.get_patient(demo.patient_id)
+            if existing:
+                database.update_patient(
+                    demo.patient_id,
+                    demo.full_name or "",
+                    demo.birth_year,
+                    demo.gender or "",
+                )
+            else:
+                database.create_patient(
+                    demo.patient_id,
+                    name=demo.full_name or "",
+                    birth_year=demo.birth_year,
+                    gender=demo.gender or "",
+                )
+            logger.info("[SESSION] Persisted patient %s", demo.patient_id)
+        if hasattr(self, "cockpit_widget") and self.cockpit_widget:
+            # Clear filmstrip widgets; demography already cleared via bind
+            for i in reversed(range(self.cockpit_widget.filmstrip_layout.count())):
+                w = self.cockpit_widget.filmstrip_layout.itemAt(i).widget()
+                if w:
+                    w.setParent(None)
+        self.current_patient_id = None
+        self.load_patient_photos()
+        self.status_bar.showMessage("Đã kết thúc phiên — nhấn F1 cho BN tiếp.", 5000)
+
+    def _session_warn(self, view):
+        msg = view.notice or "Cảnh báo phiên"
+        self.status_bar.showMessage(msg, 4000)
+        logger.warning("[SESSION_WARN] %s", msg)
 
     def _on_cockpit_patient_loaded(self, patient_data: dict):
-        """Sync patient data from ClinicalCockpitWidget grid search into main app state."""
-        patient_id = patient_data.get("patient_id", "")
-        if patient_id:
-            self.current_patient_id = patient_id
-            self.camera_thread.set_active_patient(patient_id)
-            # Also sync legacy form fields if they exist
-            if hasattr(self, 'txt_patient_id'):
-                self.txt_patient_id.setText(patient_id)
-            if hasattr(self, 'txt_patient_name'):
-                self.txt_patient_name.setText(patient_data.get("full_name", ""))
-            if hasattr(self, 'txt_birth_year'):
-                self.txt_birth_year.setText(patient_data.get("birth_year", ""))
-            self.load_patient_photos()
-            logger.info(f"[COCKPIT_PATIENT_LOAD] Synced patient {patient_id} from ClinicalCockpit grid")
+        """LoadRecord from grid selection (Task 3 bridge; Task 4 tightens barcode)."""
+        patient_id = (patient_data.get("patient_id") or "").strip()
+        if not patient_id:
+            return
+        by_raw = patient_data.get("birth_year")
+        birth_year = None
+        if by_raw not in (None, ""):
+            try:
+                birth_year = int(str(by_raw).strip())
+            except ValueError:
+                birth_year = None
+        demo = Demography(
+            patient_id=patient_id,
+            full_name=(patient_data.get("full_name") or "").strip() or None,
+            birth_year=birth_year,
+            gender=(patient_data.get("gender") or "").strip() or None,
+        )
+        self._dispatch_session(LoadRecord(demo))
+        self.load_patient_photos()
+        logger.info("[COCKPIT_PATIENT_LOAD] LoadRecord %s", patient_id)
 
     # ----------------- TAB 1: LIVE CAPTURE & SPLIT COMPARISON -----------------
     def build_tab1_capture(self):
@@ -1022,18 +1306,15 @@ class MainWindow(QMainWindow):
         self.btn_back_folder.setVisible(False)
         top_bar.addWidget(self.btn_back_folder)
 
-        self.btn_open_tab1 = QPushButton("📷 Mở ở Tab Chụp (F1)")
+        self.btn_open_tab1 = QPushButton("📷 Mở ở Tab Chụp")
         self.btn_open_tab1.setStyleSheet("background-color: #0284c7; color: white; padding: 6px 12px; font-weight: bold; border-radius: 4px;")
         self.btn_open_tab1.setCursor(Qt.PointingHandCursor)
         self.btn_open_tab1.clicked.connect(self.open_selected_folder_in_tab1)
         self.btn_open_tab1.setVisible(False)
         top_bar.addWidget(self.btn_open_tab1)
 
-        self.btn_export_report = QPushButton("📄 Xuất Báo Cáo (F10)")
-        self.btn_export_report.setStyleSheet("background-color: #0d9488; color: white; padding: 6px 12px; font-weight: bold; border-radius: 4px;")
-        self.btn_export_report.setCursor(Qt.PointingHandCursor)
-        self.btn_export_report.clicked.connect(self.export_patient_report)
-        top_bar.addWidget(self.btn_export_report)
+        # PDF export removed (v1 out of scope — SPEC hands-free)
+        self.btn_export_report = None
         
         layout.addLayout(top_bar)
 
@@ -1224,6 +1505,27 @@ class MainWindow(QMainWindow):
         
         layout.addWidget(group_hw)
 
+        # Global voice lexicon (Settings-wide)
+        group_lex = QGroupBox("TỪ ĐIỂN GIỌNG NÓI TOÀN CỤC (phrase → intent)")
+        lex_layout = QVBoxLayout(group_lex)
+        self.table_lexicon = QTableWidget()
+        self.table_lexicon.setColumnCount(2)
+        self.table_lexicon.setHorizontalHeaderLabels(["Câu lệnh (phrase)", "Intent"])
+        self.table_lexicon.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table_lexicon.setMinimumHeight(180)
+        lex_layout.addWidget(self.table_lexicon)
+        lex_btns = QHBoxLayout()
+        btn_lex_add = QPushButton("Thêm dòng")
+        btn_lex_add.clicked.connect(self._lexicon_add_row)
+        btn_lex_save = QPushButton("Lưu từ điển giọng")
+        btn_lex_save.clicked.connect(self._save_voice_lexicon)
+        lex_btns.addWidget(btn_lex_add)
+        lex_btns.addWidget(btn_lex_save)
+        lex_btns.addStretch()
+        lex_layout.addLayout(lex_btns)
+        layout.addWidget(group_lex)
+        self._load_lexicon_table()
+
         # Hardware Scanner & Diagnostic Console Box
         group_scan = QGroupBox("QUÉT & CHẨN ĐOÁN PHẦN CỨNG HỆ THỐNG")
         scan_layout = QVBoxLayout(group_scan)
@@ -1405,15 +1707,68 @@ class MainWindow(QMainWindow):
                 lbl_info = QLabel(f"📄 Photo #{idx+1}\n⏱️ {photo.get('captured_at', '')}")
                 lbl_info.setStyleSheet("color: #94a3b8; font-size: 11px;")
                 card_layout.addWidget(lbl_info)
+
+                btn_del = QPushButton("🗑️ Xóa ảnh")
+                btn_del.setStyleSheet(
+                    "background-color: #7f1d1d; color: white; padding: 4px; border-radius: 4px;"
+                )
+                photo_id = photo["id"]
+
+                def _delete_tab2_photo(_checked=False, pid=photo_id, folder=patient_id):
+                    reply = QMessageBox.question(
+                        self,
+                        "Xác nhận xóa",
+                        "Xóa ảnh này khỏi thư mục bệnh nhân?",
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.No,
+                    )
+                    if reply == QMessageBox.Yes:
+                        database.delete_photo(pid, operator_name=self.active_operator_name)
+                        self.open_patient_folder(folder)
+
+                btn_del.clicked.connect(_delete_tab2_photo)
+                card_layout.addWidget(btn_del)
                 
                 self.level2_grid.addWidget(card, r, c)
 
         self.tab2_stack.setCurrentIndex(1)
 
     def open_selected_folder_in_tab1(self):
-        if self.selected_patient_folder_id:
-            self.handle_scanned_barcode(self.selected_patient_folder_id)
-            self.switch_tab(0)
+        patient_id = self.selected_patient_folder_id
+        if not patient_id:
+            return
+        view = self.session_ctrl.snapshot()
+        current = view.demography.patient_id
+        if view.phase == Phase.STANDBY:
+            self.status_bar.showMessage("F1 mở phiên trước khi mở ở Tab Chụp.", 4000)
+            return
+        if current and current != patient_id:
+            self.status_bar.showMessage(
+                f"Đang khám [{current}] — F4 rồi F1 để đổi BN",
+                5000,
+            )
+            return
+        # Same patient (or empty demography with id match intent): jump to capture tab only
+        if not current:
+            # Allow loading same-folder BN into intake when session open but empty
+            patient = database.get_patient(patient_id)
+            if patient:
+                demo = Demography(
+                    patient_id=patient_id,
+                    full_name=patient.get("name") or None,
+                    birth_year=patient.get("birth_year"),
+                    gender=patient.get("gender") or None,
+                )
+                self._dispatch_session(LoadRecord(demo))
+                self.load_patient_photos()
+        self.switch_tab(0)
+
+    def export_patient_report(self):
+        QMessageBox.information(
+            self,
+            "Xuất báo cáo",
+            "Xuất PDF/báo cáo đã gỡ khỏi v1 (xem SPEC Hands-Free Session).",
+        )
 
     def load_history_records(self):
         if self.tab2_stack.currentIndex() == 1 and self.selected_patient_folder_id:
@@ -1511,31 +1866,42 @@ class MainWindow(QMainWindow):
         pass
         self.sidebar.setCurrentRow(0)  # Jump to Tab 1
 
-    def export_patient_report(self):
-        if not self.current_patient_id:
-            QMessageBox.warning(self, "Xuất Báo Cáo", "Vui lòng chọn một bệnh nhân để xuất báo cáo.")
-            return
-            
-        save_path, _ = QFileDialog.getSaveFileName(self, "Lưu Phiếu Báo Cáo Ảnh", f"BaoCao_{self.current_patient_id}.txt", "Text Files (*.txt)")
-        if save_path:
-            patient = database.get_patient(self.current_patient_id)
-            photos = database.get_patient_photos(self.current_patient_id)
-            with open(save_path, "w", encoding="utf-8") as f:
-                f.write(f"=== BÁO CÁO HÌNH ẢNH BỆNH ÁN - 354 HOSPITAL ===\n")
-                f.write(f"Mã BA: {self.current_patient_id}\n")
-                f.write(f"Họ tên: {patient.get('name', 'N/A')}\n")
-                f.write(f"Năm sinh: {patient.get('birth_year', 'N/A')}\n")
-                f.write(f"Giới tính: {patient.get('gender', 'N/A')}\n")
-                f.write(f"Tổng số ảnh chụp: {len(photos)}\n\n")
-                f.write("Danh sách ảnh:\n")
-                for p in photos:
-                    f.write(f" - [{p['captured_at']}] {p['file_path']} (Người chụp: {p['operator_name']})\n")
-            QMessageBox.information(self, "Thành công", f"Đã xuất file báo cáo: {save_path}")
-
     # ----------------- SETTINGS & THEME LOGIC -----------------
     def on_theme_dropdown_changed(self, idx):
         theme_name = "dark" if idx == 0 else "light"
         self.apply_theme(theme_name)
+
+    def _load_lexicon_table(self):
+        phrases = load_lexicon(self._lexicon_path)
+        self.table_lexicon.setRowCount(0)
+        for phrase, intent in sorted(phrases.items()):
+            row = self.table_lexicon.rowCount()
+            self.table_lexicon.insertRow(row)
+            self.table_lexicon.setItem(row, 0, QTableWidgetItem(phrase))
+            self.table_lexicon.setItem(row, 1, QTableWidgetItem(intent))
+
+    def _lexicon_add_row(self):
+        row = self.table_lexicon.rowCount()
+        self.table_lexicon.insertRow(row)
+        self.table_lexicon.setItem(row, 0, QTableWidgetItem(""))
+        self.table_lexicon.setItem(row, 1, QTableWidgetItem(""))
+
+    def _save_voice_lexicon(self):
+        phrases: dict[str, str] = {}
+        for row in range(self.table_lexicon.rowCount()):
+            p_item = self.table_lexicon.item(row, 0)
+            i_item = self.table_lexicon.item(row, 1)
+            phrase = (p_item.text() if p_item else "").strip()
+            intent = (i_item.text() if i_item else "").strip()
+            if phrase and intent:
+                phrases[phrase.lower()] = intent
+        if not phrases:
+            QMessageBox.warning(self, "Từ điển giọng", "Cần ít nhất một cặp phrase → intent.")
+            return
+        save_lexicon(self._lexicon_path, phrases)
+        self._dispatch_session(LexiconUpdate(phrases))
+        self.status_bar.showMessage(f"Đã lưu {len(phrases)} lệnh giọng (toàn cục).", 4000)
+        logger.info("[LEXICON] Saved %s phrases to %s", len(phrases), self._lexicon_path)
 
     def browse_working_dir(self):
         cur_dir = str(config.get_photos_dir())
@@ -1744,9 +2110,6 @@ class MainWindow(QMainWindow):
         self.refresh_hardware_grid_table()
         self.lbl_hw_status.setText("Đã đồng bộ thông tin phần cứng hệ thống.")
 
-    def keyPressEvent(self, event):
-        super().keyPressEvent(event)
-
     def auto_scan_and_select_best_hardware(self):
         try:
             real_cams = get_real_camera_list()
@@ -1784,7 +2147,9 @@ class MainWindow(QMainWindow):
 
     def start_voice_thread(self):
         self.voice_thread = VoiceDetectorThread()
-        self.voice_thread.capture_signal.connect(lambda: self.trigger_photo_capture(source="VOICE_COMMAND"))
+        self.voice_thread.capture_signal.connect(
+            lambda: self._dispatch_session(VoiceUtterance("chụp"))
+        )
         self.voice_thread.keyword_signal.connect(self.on_voice_keyword_detected)
         self.voice_thread.status_signal.connect(self.update_voice_status)
         self.voice_thread.volume_signal.connect(self.update_voice_volume)
@@ -1799,9 +2164,36 @@ class MainWindow(QMainWindow):
 
     @Slot(dict)
     def handle_voice_patient_info(self, patient_data):
-        if hasattr(self, 'cockpit_widget') and self.cockpit_widget:
-            logger.info(f"[VOICE_PATIENT_LOADED] Auto-filling banner fields: {patient_data}")
-            self.cockpit_widget.load_patient_from_voice(patient_data)
+        """Structured demography from voice thread → UiFieldEdit / search filters only."""
+        if not patient_data:
+            return
+        snap = self.session_ctrl.snapshot()
+        if snap.phase == Phase.STANDBY:
+            logger.info("[VOICE_PATIENT] Ignored — Standby (F1 first)")
+            return
+        # Never write patient_id from voice
+        patient_data = {k: v for k, v in patient_data.items() if k != "patient_id"}
+        if snap.search.open:
+            self._dispatch_session(
+                SearchFilterEdit(
+                    patient_id=snap.search.filter.patient_id,
+                    full_name=patient_data.get("full_name") or snap.search.filter.full_name,
+                    birth_year=patient_data.get("birth_year") or snap.search.filter.birth_year,
+                    gender=patient_data.get("gender") or snap.search.filter.gender,
+                )
+            )
+            return
+        if "full_name" in patient_data and Field.FULL_NAME in snap.affordances.editable:
+            self._dispatch_session(UiFieldEdit(Field.FULL_NAME, patient_data["full_name"]))
+        if "birth_year" in patient_data and Field.BIRTH_YEAR in snap.affordances.editable:
+            try:
+                year = int(str(patient_data["birth_year"]).strip())
+            except ValueError:
+                year = None
+            if year is not None:
+                self._dispatch_session(UiFieldEdit(Field.BIRTH_YEAR, year))
+        if "gender" in patient_data and Field.GENDER in snap.affordances.editable:
+            self._dispatch_session(UiFieldEdit(Field.GENDER, patient_data["gender"]))
 
     def start_updater_thread(self):
         if not self.app_config.get("enable_ota", False):
@@ -1827,65 +2219,26 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def on_pedal_gesture_detected(self, gesture):
-        if hasattr(self, 'cockpit_widget') and self.cockpit_widget and not self.cockpit_widget.is_session_open:
-            logger.info(f"[PEDAL_EVENT] Ignored pedal gesture '{gesture}' because session is closed (Standby mode).")
-            return
-        logger.info(f"[GESTURE_EVENT] Pedal Gesture: {gesture} | Op: {self.active_operator_id}")
-        if hasattr(self, 'multimodal_dispatcher') and self.multimodal_dispatcher:
-            self.multimodal_dispatcher.handle_pedal_event(gesture)
-        action_id = database.get_mapped_action(self.active_operator_id, "PEDAL_GESTURE", gesture)
-        if action_id:
-            action_registry.dispatch_action(action_id, self)
-        else:
-            if gesture == "SINGLE_TAP":
-                self.trigger_photo_capture(source="PEDAL_SINGLE_TAP")
-            elif gesture == "DOUBLE_TAP" or gesture == "LONG_PRESS":
-                self.delete_latest_photo()
+        # Pedal = capture-only (any gesture maps to PedalGesture; domain ignores if not Locked)
+        logger.info(f"[GESTURE_EVENT] Pedal → session capture | gesture={gesture} | Op: {self.active_operator_id}")
+        self._dispatch_session(PedalGesture())
 
     @Slot(str)
     def on_voice_keyword_detected(self, keyword):
-        if hasattr(self, 'cockpit_widget') and self.cockpit_widget and not self.cockpit_widget.is_session_open:
-            logger.info(f"[VOICE_EVENT] Ignored voice keyword '{keyword}' because session is closed (Standby mode).")
-            return
-        # Ignore clinical triggers if a modal test dialog is currently active
-        from PySide6.QtWidgets import QApplication
+        # Modal test dialogs block clinical voice; search grid still accepts VoiceUtterance
         active_window = QApplication.activeModalWidget()
-        if active_window is not None:
-            logger.info(f"[VOICE_EVENT] Ignored keyword '{keyword}' because modal test dialog is active.")
-            return
+        if active_window is not None and active_window is not self._search_dialog:
+            # Allow voice into search dialog; block other modals (hardware tests)
+            from src.ui_patient_grid import PatientGridDialog
+            if not isinstance(active_window, PatientGridDialog):
+                logger.info(
+                    "[VOICE_EVENT] Ignored keyword '%s' because modal test dialog is active.",
+                    keyword,
+                )
+                return
 
-        logger.info(f"[VOICE_EVENT] Voice Keyword: '{keyword}' | Op: {self.active_operator_id}")
-
-        # Dispatch via multimodal_dispatcher FIRST — if it handles the keyword, stop here.
-        # This prevents double-dispatch (e.g. "xóa" deleting 2 photos).
-        if hasattr(self, 'multimodal_dispatcher') and self.multimodal_dispatcher:
-            from src.multimodal_dispatcher import VOICE_MAP
-            text_lower = keyword.lower().strip()
-            matched_action = VOICE_MAP.get(text_lower)
-            if matched_action is None:
-                for kw, act in VOICE_MAP.items():
-                    if kw in text_lower:
-                        matched_action = act
-                        break
-            if matched_action is not None:
-                self.multimodal_dispatcher.handle_voice_command(keyword)
-                return  # Already dispatched — do NOT dispatch again below
-
-        # Fallback: dispatch via action_registry or hardcoded keyword handlers
-        action_id = database.get_mapped_action(self.active_operator_id, "VOICE_KEYWORD", keyword)
-        if action_id:
-            action_registry.dispatch_action(action_id, self)
-        else:
-            if keyword in ["chụp", "chụp ảnh"]:
-                self.trigger_photo_capture(source="VOICE_CHỤP")
-            elif keyword in ["xóa hết", "xóa tất cả"]:
-                self.delete_all_photos()
-            elif keyword in ["xóa", "xóa ảnh"]:
-                self.delete_latest_photo()
-            elif keyword in ["tìm", "tìm kiếm", "tra cứu"]:
-                self.open_patient_search_dialog()
-            elif keyword in ["hoàn thành", "tiếp", "bệnh nhân tiếp"]:
-                self.reset_active_patient()
+        logger.info("[VOICE_EVENT] → VoiceUtterance '%s'", keyword)
+        self._dispatch_session(VoiceUtterance(keyword))
 
     def delete_latest_photo(self):
         if not self.current_patient_id:
@@ -1895,9 +2248,57 @@ class MainWindow(QMainWindow):
         if photos:
             last_photo = photos[-1]
             print('\a')
+            full_path = database.get_full_photo_path(last_photo["file_path"])
+            self._pending_undo_photo = {
+                "patient_id": self.current_patient_id,
+                "file_path": last_photo["file_path"],
+                "full_path": str(full_path) if full_path else None,
+                "photo_id": last_photo["id"],
+                "bytes": None,
+            }
+            try:
+                if full_path and Path(full_path).exists():
+                    self._pending_undo_photo["bytes"] = Path(full_path).read_bytes()
+            except Exception as e:
+                logger.warning("[UNDO_DELETE] Could not snapshot file: %s", e)
             database.delete_photo(last_photo["id"], operator_name=self.active_operator_name)
             self.load_patient_photos()
-            self.status_bar.showMessage(f"Đã xóa ảnh gần nhất: {os.path.basename(last_photo['file_path'])}", 4000)
+            self.status_bar.showMessage(
+                f"Đã xóa ảnh gần nhất: {os.path.basename(last_photo['file_path'])} — bấm Hoàn tác trong 5s",
+                5000,
+            )
+            if hasattr(self, "btn_undo_delete"):
+                self.btn_undo_delete.setVisible(True)
+            if hasattr(self, "_undo_timer"):
+                self._undo_timer.start(5000)
+
+    def _clear_undo_delete(self):
+        self._pending_undo_photo = None
+        if hasattr(self, "btn_undo_delete"):
+            self.btn_undo_delete.setVisible(False)
+
+    def _undo_last_photo_delete(self):
+        pending = self._pending_undo_photo
+        self._clear_undo_delete()
+        if not pending or not pending.get("bytes") or not pending.get("full_path"):
+            self.status_bar.showMessage("Không còn ảnh để hoàn tác.", 3000)
+            return
+        try:
+            dest = Path(pending["full_path"])
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(pending["bytes"])
+            database.add_photo(
+                pending["patient_id"],
+                pending["file_path"],
+                operator_id=self.active_operator_id,
+                operator_name=self.active_operator_name,
+            )
+            self.load_patient_photos()
+            self.status_bar.showMessage("Đã hoàn tác xóa ảnh.", 4000)
+            logger.info("[UNDO_DELETE] Restored %s", pending["file_path"])
+        except Exception as e:
+            logger.error("[UNDO_DELETE] Failed: %s", e, exc_info=True)
+            self.status_bar.showMessage("Hoàn tác xóa thất bại.", 4000)
 
     def delete_all_photos(self):
         """Delete ALL photos for the current patient session."""
@@ -2004,68 +2405,46 @@ class MainWindow(QMainWindow):
             logger.error(f"[MIC_ERROR] Error changing microphone: {str(e)}", exc_info=True)
 
     def open_patient_search_dialog(self):
-        from src.ui_patient_grid import PatientGridDialog
-        if not hasattr(self, 'search_service') or not self.search_service:
-            self.search_service = PatientSearchService(db_path=config.DB_PATH)
-        dialog = PatientGridDialog(search_service=self.search_service, parent=self)
-        dialog.patient_selected.connect(self.on_patient_selected_from_grid)
-        dialog.exec()
+        """Legacy entry — route through session F5 when possible."""
+        snap = self.session_ctrl.snapshot()
+        if snap.phase == Phase.STANDBY:
+            self.status_bar.showMessage("Mở phiên (F1) trước khi tìm hồ sơ.", 4000)
+            return
+        self._dispatch_session(Hotkey("F5"))
 
     @Slot(dict)
     def on_patient_selected_from_grid(self, patient_dict):
-        patient_id = patient_dict.get("patient_id")
-        if patient_id:
-            self.handle_scanned_barcode(patient_id)
+        self._on_cockpit_patient_loaded(patient_dict)
 
     @Slot(str)
     def handle_scanned_barcode(self, barcode_data):
         try:
-            from PySide6.QtWidgets import QApplication
             QApplication.beep()
         except Exception:
             pass
-            
+
         parsed = barcode_parser.parse_barcode(barcode_data)
-        patient_id = parsed["patient_id"]
-        
-        self.current_patient_id = patient_id
-        self.camera_thread.set_active_patient(patient_id)
-        
-        patient = database.get_patient(patient_id)
-        if patient:
-            name = patient.get("name", "")
-            dob = str(patient.get("birth_year") or "")
-            gender = patient.get("gender", "Nam")
-        else:
-            name = parsed.get("name", "")
-            dob = parsed.get("birth_year") or ""
-            gender = parsed.get("gender", "Nam")
-            database.create_patient(patient_id, name=name, birth_year=dob, gender=gender)
-            
-        patient_data = {
-            "patient_id": patient_id,
-            "full_name": name,
-            "birth_year": str(dob) if dob else "",
-            "gender": gender
-        }
-        
-        # Populate new ClinicalCockpitWidget banner fields and enable Start Session
-        if hasattr(self, 'cockpit_widget') and self.cockpit_widget:
-            self.cockpit_widget.load_patient(patient_data)
-            
-        # Legacy fallback if widgets exist
-        if hasattr(self, 'lbl_scan_status'):
-            self.lbl_scan_status.setText(f"✅ ĐÃ QUÉT MÃ BỆNH NHÂN: {patient_id} (ĐÃ MỞ PHIÊN KHÁM MỚI)")
-            self.lbl_scan_status.setStyleSheet("color: #22c55e; font-weight: bold; font-size: 14px; padding: 4px; background-color: #052e16; border-radius: 4px;")
-        if hasattr(self, 'txt_patient_id'):
-            self.txt_patient_id.setText(patient_id)
-        if hasattr(self, 'txt_patient_name'):
-            self.txt_patient_name.setText(name)
-        if hasattr(self, 'txt_birth_year'):
-            self.txt_birth_year.setText(str(dob) if dob else "")
-            
-        database.log_audit_event("BARCODE_SCAN", operator_name=self.active_operator_name, patient_id=patient_id)
-        self.load_patient_photos()
+        patient_id = (parsed.get("patient_id") or "").strip()
+        if not patient_id:
+            return
+
+        # Tab 2 browse-only: do not drive session (Task 7 reinforces)
+        if hasattr(self, "stack") and self.stack.currentIndex() == 1:
+            logger.info("[BARCODE] Tab2 browse filter only — skipped session BarcodeScan")
+            return
+
+        outcome = self._dispatch_session(BarcodeScan(patient_id))
+        logger.info(
+            "[BARCODE] → session code=%s phase=%s effects=%s",
+            patient_id,
+            outcome.view.phase.value,
+            [e.value for e in outcome.effects],
+        )
+        database.log_audit_event(
+            "BARCODE_SCAN",
+            operator_name=self.active_operator_name,
+            patient_id=patient_id,
+        )
 
     @Slot()
     def start_session_by_manual_id(self):
@@ -2385,13 +2764,29 @@ class MainWindow(QMainWindow):
         return False
 
     def keyPressEvent(self, event):
-        key = event.key()
-        if key == Qt.Key_F1:
-            if hasattr(self, 'cockpit_widget') and self.cockpit_widget:
-                self.cockpit_widget.on_start_session()
+        key_map = {
+            Qt.Key_F1: "F1",
+            Qt.Key_F2: "F2",
+            Qt.Key_F4: "F4",
+            Qt.Key_F5: "F5",
+            Qt.Key_Space: "Space",
+            Qt.Key_Delete: "Delete",
+        }
+        mapped = key_map.get(event.key())
+        if mapped:
+            focus = QApplication.focusWidget()
+            # Let plain text fields keep Space; session still owns F-keys and Delete/Space when Locked
+            if mapped == "Space" and isinstance(focus, QLineEdit):
+                super().keyPressEvent(event)
+                return
+            if mapped == "F1":
+                self._request_f1_session()
+            else:
+                self._dispatch_session(Hotkey(mapped))
+            event.accept()
             return
-        if hasattr(self, 'multimodal_dispatcher') and self.multimodal_dispatcher:
-            self.multimodal_dispatcher.handle_key_event(key)
+        if hasattr(self, "multimodal_dispatcher") and self.multimodal_dispatcher:
+            self.multimodal_dispatcher.handle_key_event(event.key())
         super().keyPressEvent(event)
 
     def confirm_exit_app(self):

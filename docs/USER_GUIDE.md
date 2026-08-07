@@ -2,12 +2,14 @@
 
 Tài liệu này hướng dẫn chi tiết cách khởi chạy, cấu hình phần cứng và vận hành giao diện 4 Tab của phần mềm chụp ảnh bệnh nhân rảnh tay.
 
+> **Luồng phiên Tab 1 (F1/F2/F4, Voice Intake, F5 lưới):** xem chi tiết trong `docs/SPEC_HANDS_FREE_SESSION_V1.md` và `CONTEXT.md`.
+
 ---
 
 ## 1. Hướng Dẫn Khởi Chạy
 
 ### Khởi chạy phần mềm
-Mở cửa sổ **PowerShell** tại thư mục ứng dụng (`c:\Users\vinhd\Desktop\VietAnh`) và chạy:
+Mở cửa sổ **PowerShell** tại thư mục ứng dụng và chạy:
 ```powershell
 .venv\Scripts\python main.py
 ```
@@ -20,19 +22,28 @@ Mở cửa sổ **PowerShell** tại thư mục ứng dụng (`c:\Users\vinhd\De
 
 ## 2. Quy Trình Vận Hành Với Giao Diện 4 Tab
 
-### [ Tab 1 ] Chụp Ảnh Bệnh Nhân & So Sánh Màn Hình Đôi
-1. **Chọn Người Thao Tác (Ca làm việc):** Ở đầu ca làm việc, Bác sĩ/Kỹ thuật viên chọn tên mình trên thanh thông tin để phần mềm tự động gán tên người chụp vào từng bức ảnh.
-2. **Quét Mã Vạch Bệnh Án:** Đưa phiếu khám chứa mã vạch/QR trước camera. Máy kêu "Tít" và tự động load bệnh án.
-3. **So Sánh Màn Hình Đôi (Split-Screen):** Màn hình hiển thị luồng Camera trực tiếp bên trái $\leftrightarrow$ Ảnh mốc đợt 1 bên phải để bác sĩ nhìn đối chiếu căn đúng tư thế chụp.
-4. **Chụp ảnh:** 
-   * Giậm chân lên bàn đạp chân (`F13`).
-   * Hô từ **"Chụp"** trước microphone.
-   * Hoặc bấm nút **CHỤP ẢNH** màu xanh trên màn hình.
+### [ Tab 1 ] Clinical Cockpit — phiên khám rảnh tay
 
-### [ Tab 2 ] Tra Cứu & Báo Cáo Bệnh Án
-* Nhập Mã BA hoặc Họ tên vào ô tìm kiếm.
-* Chuyển đổi giữa góc nhìn **Dạng Timeline theo Ngày khám** và **Dạng Lưới Ảnh Tổng hợp**.
-* Bấm nút **Xuất Báo Cáo PDF / In Phiếu Ảnh** để in hoặc xuất file báo cáo y tế.
+1. **F1 — Mở phiên:** bật camera / mic / pedal (thoát Standby).  
+2. **Nhập hồ sơ** (một trong các cách):  
+   * Quét barcode → mở **lưới tìm hồ sơ** (không tự ghi form). Chọn dòng hoặc confirm BN mới.  
+   * **F5** → lưới hồ sơ gần đây / lọc theo mã–tên–năm sinh–giới tính.  
+   * Gõ tay 4 field: Mã BN, Họ tên, Năm sinh, Giới tính.  
+   * Nói pattern demography (họ tên / năm sinh / giới tính) — **giọng không ghi Mã BN**.  
+3. Đủ 4 field → Ready. **F2 · Bắt đầu chụp** khóa hồ sơ (Locked Capture).  
+4. **Chụp ảnh** (chỉ khi Locked):  
+   * Bàn đạp chân = **chỉ chụp** (không xóa / không đổi BN).  
+   * Phím **Space** hoặc nói **"chụp"**.  
+5. **Xóa ảnh gần nhất:** phím **Delete** hoặc nói **"xóa"** (không dùng pedal). Có hoàn tác ~5 giây trên status bar.  
+6. **F4 · Kết thúc phiên** → lưu hồ sơ, tắt thiết bị, về Standby. BN tiếp theo phải F1 lại.  
+7. Alias thoại kết thúc: *"kết thúc phiên"*, *"hoàn thành"*, *"chuyển bệnh nhân mới"*.
+
+### [ Tab 2 ] Thư mục bệnh án (xem / duyệt)
+
+* Tìm theo Mã BA hoặc Họ tên để **lọc thư mục** (không thay F5 tìm hồ sơ phiên).  
+* Mở thư mục BN → xem ảnh; **xóa từng ảnh** có hộp thoại xác nhận.  
+* **Mở ở Tab Chụp:** chỉ khi đang có phiên và cùng BN (hoặc form trống); BN khác bị chặn — cần F4 rồi F1.  
+* **Không xuất PDF** trong v1.
 
 ### [ Tab 3 ] Quản Lý Nhân Viên & Nhật Ký Kiểm Toán (Audit Logs)
 * **Chọn Ca Làm Việc:** Chọn nhân viên trực tiếp thao tác hiện tại.
@@ -40,22 +51,26 @@ Mở cửa sổ **PowerShell** tại thư mục ứng dụng (`c:\Users\vinhd\De
 * **Nhật Ký Kiểm Toán (Audit Logs):** Tra cứu lịch sử vận hành (Ai đã quét mã nào, chụp ảnh nào, lúc mấy giờ, qua bàn đạp hay giọng nói).
 
 ### [ Tab 4 ] Cài Đặt Hệ Thống & Giao Diện
-* **Chọn Camera Vật Lý Thật:** Danh sách tự động quét hiển thị chính xác tên thương hiệu phần cứng thật (ví dụ: `Logi Webcam C920e (Cổng Index 0)`).
-* **Chọn Microphone Giọng Nói:** Chọn giữa Micro Venfish, Tai nghe Bluetooth, Micro C920e stereo hoặc Jack 3.5mm AUX.
-* **🔍 Nút QUÉT PHẦN CỨNG (Scan Hardware):**
-  * Ngay khi bấm nút, phần mềm hiển thị **Bảng Tiến Trình Loading Progress Modal** mượt mà không gây treo màn hình.
-  * Tự động quét kiểm tra chính xác **4 phần cứng vật lý chính** (Camera, Micro, Bàn đạp chân, Cổng COM).
-  * **Lưu CSDL Tự Động:** Kết quả quét được tự động lưu vào CSDL SQLite (`app.db`). Trong các lần khởi động tiếp theo, phần mềm tự động nạp lại cấu hình mượt mà trong $<5\text{ms}$ mà không cần mất thời gian quét lại.
-* **🛠️ Hệ Thống Nút TEST PHẦN CỨNG TƯƠNG TÁC TRỰC TIẾP:**
-  * **[ 🛠️ Test Camera ]**: Mở cửa sổ xem video trực tiếp + **Thử Quét Mã QR/Mã Vạch**. Đưa mã vạch trước camera $\rightarrow$ Máy kêu "Tít" và báo badge xanh `Đã Quét Mã: [ PHCN2647781 ] - OK`.
-  * **[ 🛠️ Test Microphone ]**: Mở thanh đo âm lượng RMS (0-100%) + **Thử Hô Lệnh Giọng Nói**. Nói các từ `"Chụp"`, `"Xóa"`, `"Tiếp"`, `"Xem"` $\rightarrow$ Cửa sổ báo badge xanh `Đã Nhận Lệnh: "CHỤP" - OK`.
-  * **[ 🛠️ Test Bàn Đạp Chân ]**: Mở bảng danh sách 4 cử chỉ (1 giậm, 2 giậm, 3 giậm, nhấn giữ). Giậm chân lên bàn đạp $\rightarrow$ Cửa sổ tự động tích `[✓]` xanh tương ứng vào cử chỉ vừa giậm.
-  * **[ 🛠️ Test Cổng COM ]**: Gửi tín hiệu kiểm tra kết nối RS232/USB Serial $\rightarrow$ Báo `Phản Hồi Cổng COM1: OK`.
-* **Đổi Chế Độ Màu Giao Diện:** Chuyển đổi giữa **Dark Slate (Mặc định)** và **Light Clinical (Sáng Y tế)**.
+* **Chọn Camera / Microphone / Pedal** và các nút Test phần cứng.  
+* **Từ điển giọng nói toàn cục:** bảng phrase → intent; Lưu áp dụng cho mọi ca (không override theo nhân viên trong v1).  
+* **Đổi theme** Dark Slate / Light Clinical; thư mục lưu ảnh; URL OTA (nếu bật).
 
 ---
 
-## 3. Quy Trình Cài Đặt Offline Trọn Gói Cho Máy Bệnh Viện (Windows 10/11 x64)
+## 3. Phím tắt phiên khám (tóm tắt)
+
+| Phím | Hành động |
+|---|---|
+| F1 | Mở / đóng phiên (Standby ↔ Intake) |
+| F2 | Bắt đầu chụp (khóa hồ sơ) khi Ready |
+| F4 | Kết thúc phiên → Standby |
+| F5 | Mở lưới tìm hồ sơ (Intake/Ready) |
+| Space | Chụp (Locked) |
+| Delete | Xóa ảnh gần nhất (Locked) |
+
+---
+
+## 4. Quy Trình Cài Đặt Offline Trọn Gói Cho Máy Bệnh Viện (Windows 10/11 x64)
 
 ### 🚀 Cài Đặt 1-Click (Dành Cho Máy Chưa Cài Python):
 1. Giải nén tệp **`PatientCaptureApp_v1.0_Offline.zip`** (hoặc chép thư mục `PatientCaptureApp_v1.0_Offline` từ USB).

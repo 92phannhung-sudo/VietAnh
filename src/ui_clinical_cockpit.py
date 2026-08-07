@@ -11,6 +11,7 @@ from PySide6.QtGui import QPixmap
 
 class ClinicalCockpitWidget(QWidget):
     start_session_requested = Signal()
+    begin_capture_requested = Signal()
     complete_session_requested = Signal()
     capture_requested = Signal()
     delete_last_requested = Signal()
@@ -74,7 +75,7 @@ class ClinicalCockpitWidget(QWidget):
         self.btn_search.clicked.connect(self.open_search_grid)
         banner_layout.addWidget(self.btn_search)
 
-        self.btn_start = QPushButton("🚀 F1 Mở phiên làm việc")
+        self.btn_start = QPushButton("🚀 F1 Mở phiên")
         self.btn_start.setCursor(Qt.PointingHandCursor)
         self.btn_start.setEnabled(True)
         self.btn_start.setStyleSheet("""
@@ -84,6 +85,17 @@ class ClinicalCockpitWidget(QWidget):
         """)
         self.btn_start.clicked.connect(self.on_start_session)
         banner_layout.addWidget(self.btn_start)
+
+        self.btn_begin_capture = QPushButton("F2 · Bắt đầu chụp (khóa hồ sơ)")
+        self.btn_begin_capture.setCursor(Qt.PointingHandCursor)
+        self.btn_begin_capture.setEnabled(False)
+        self.btn_begin_capture.setStyleSheet("""
+            QPushButton { background-color: #2563eb; color: white; font-weight: bold; padding: 6px 12px; border-radius: 4px; }
+            QPushButton:hover { background-color: #3b82f6; }
+            QPushButton:disabled { background-color: #334155; color: #64748b; }
+        """)
+        self.btn_begin_capture.clicked.connect(self.begin_capture_requested.emit)
+        banner_layout.addWidget(self.btn_begin_capture)
 
         banner_vlayout.addLayout(banner_layout)
         main_layout.addWidget(self.banner)
@@ -143,9 +155,11 @@ class ClinicalCockpitWidget(QWidget):
         scroll_area.setWidget(self.filmstrip_widget)
         bottom_layout.addWidget(scroll_area, stretch=8)
 
-        self.btn_complete = QPushButton("✅ F2 Hoàn thành & Lưu CSDL")
+        self.btn_complete = QPushButton("F4 · Kết thúc phiên (tắt thiết bị)")
         self.btn_complete.setCursor(Qt.PointingHandCursor)
-        self.btn_complete.setStyleSheet("background-color: #0369a1; color: white; font-weight: bold; padding: 10px 16px; border-radius: 6px;")
+        self.btn_complete.setStyleSheet(
+            "background-color: #b45309; color: white; font-weight: bold; padding: 10px 16px; border-radius: 6px;"
+        )
         self.btn_complete.clicked.connect(self.on_complete_session)
         bottom_layout.addWidget(self.btn_complete, stretch=2)
 
@@ -281,19 +295,117 @@ class ClinicalCockpitWidget(QWidget):
             self.validate_inputs()
 
     def on_start_session(self):
-        if self.is_session_open:
-            # F1 when active -> END SESSION IMMEDIATELY
-            self.on_complete_session()
-            self.update_session_ui_state(False)
-        else:
-            # F1 when standby -> OPEN NEW SESSION
-            self.update_session_ui_state(True)
-            self.input_id.setFocus()
-            self.start_session_requested.emit()
+        """F1 — session open/close is decided by PatientSessionController."""
+        self.start_session_requested.emit()
 
     def on_complete_session(self):
+        """F4 end session — controller owns clear; shell only emits."""
         self.complete_session_requested.emit()
-        self.reset_session()
+
+    def apply_session_view(self, view) -> None:
+        """Bind demography / phase / affordances from SessionView (Design A)."""
+        from src.patient_session_controller import Phase, Field
+
+        phase = view.phase
+        is_open = phase != Phase.STANDBY
+        aff = view.affordances
+        demo = view.demography
+
+        for inp in (self.input_id, self.input_name, self.input_birth, self.input_gender):
+            inp.blockSignals(True)
+
+        self.input_id.setText(demo.patient_id or "")
+        self.input_name.setText(demo.full_name or "")
+        self.input_birth.setText("" if demo.birth_year is None else str(demo.birth_year))
+        self.input_gender.setText(demo.gender or "")
+
+        editable = aff.editable
+        self.input_id.setEnabled(is_open and Field.PATIENT_ID in editable)
+        self.input_name.setEnabled(is_open and Field.FULL_NAME in editable)
+        self.input_birth.setEnabled(is_open and Field.BIRTH_YEAR in editable)
+        self.input_gender.setEnabled(is_open and Field.GENDER in editable)
+
+        for inp in (self.input_id, self.input_name, self.input_birth, self.input_gender):
+            inp.blockSignals(False)
+
+        self.is_session_open = is_open
+        self.btn_search.setEnabled(aff.can_open_search)
+        self.btn_complete.setEnabled(aff.end_session)
+        self.btn_begin_capture.setEnabled(aff.begin_capture)
+        self.btn_begin_capture.setText("F2 · Bắt đầu chụp (khóa hồ sơ)")
+        self.btn_complete.setText("F4 · Kết thúc phiên (tắt thiết bị)")
+
+        # Tooltip for locked patient id (§12.5)
+        if Field.PATIENT_ID not in editable and is_open:
+            self.input_id.setToolTip("Đổi mã: F4 kết thúc phiên, rồi F1 và tìm lại")
+        else:
+            self.input_id.setToolTip("")
+
+        if phase == Phase.STANDBY:
+            self.btn_start.setText("🚀 F1 Mở phiên")
+            self.btn_start.setStyleSheet("""
+                QPushButton { background-color: #15803d; color: white; font-weight: bold; padding: 6px 16px; border-radius: 4px; }
+                QPushButton:hover { background-color: #16a34a; }
+            """)
+            self.lbl_status_badge.setText(
+                "⚪ STANDBY — nhấn F1 để mở phiên (bật thiết bị)"
+            )
+            self.lbl_status_badge.setStyleSheet(
+                "color: #94a3b8; font-weight: bold; font-size: 13px; padding: 2px 6px; background-color: #1e293b; border-radius: 4px;"
+            )
+            self.camera_label.setPixmap(QPixmap())
+            self.camera_label.setText(
+                "⏸️ HỆ THỐNG ĐANG Ở CHẾ ĐỘ CHỜ (KẾT THÚC PHIÊN)\n\n"
+                "[Bàn đạp, Giọng nói và Camera tạm dừng]\n[BẤM F1 ĐỂ MỞ ĐẦU PHIÊN KHÁM MỚI]"
+            )
+            self.active_patient = None
+        elif phase == Phase.LOCKED_CAPTURE:
+            self.btn_start.setText("🏁 F1 Đóng ca (Standby)")
+            self.btn_start.setStyleSheet("""
+                QPushButton { background-color: #dc2626; color: white; font-weight: bold; padding: 6px 16px; border-radius: 4px; }
+                QPushButton:hover { background-color: #ef4444; }
+            """)
+            pid = demo.patient_id or "?"
+            pname = demo.full_name or ""
+            self.lbl_status_badge.setText(f"🔒 Đang ghi ảnh cho: {pid} — {pname}")
+            self.lbl_status_badge.setStyleSheet(
+                "color: #fbbf24; font-weight: bold; font-size: 13px; padding: 2px 6px; background-color: #78350f; border: 1px solid #f59e0b; border-radius: 4px;"
+            )
+        else:
+            self.btn_start.setText("🏁 F1 Đóng ca (Standby)")
+            self.btn_start.setStyleSheet("""
+                QPushButton { background-color: #dc2626; color: white; font-weight: bold; padding: 6px 16px; border-radius: 4px; }
+                QPushButton:hover { background-color: #ef4444; }
+            """)
+            notice = view.notice
+            if notice:
+                self.lbl_status_badge.setText(f"⚠️ {notice}")
+            elif aff.begin_capture:
+                self.lbl_status_badge.setText(
+                    f"🟢 READY — đủ hồ sơ. F2 để khóa & bắt đầu chụp [{demo.patient_id}]"
+                )
+                self.lbl_status_badge.setStyleSheet(
+                    "color: #22c55e; font-weight: bold; font-size: 13px; padding: 2px 6px; background-color: #052e16; border: 1px solid #16a34a; border-radius: 4px;"
+                )
+            else:
+                field_hints = {
+                    Field.PATIENT_ID: "Mã BN",
+                    Field.FULL_NAME: "Họ tên",
+                    Field.BIRTH_YEAR: 'Năm sinh — nói "năm sinh …"',
+                    Field.GENDER: "Giới tính",
+                }
+                missing = " — ".join(
+                    field_hints.get(f, f.value) for f in sorted(view.missing_for_gate, key=lambda x: x.value)
+                )
+                self.lbl_status_badge.setText(
+                    f"🟢 ĐÃ MỞ PHIÊN ({phase.value}) · Thiếu: {missing}" if missing
+                    else f"🟢 ĐÃ MỞ PHIÊN ({phase.value})"
+                )
+                self.lbl_status_badge.setStyleSheet(
+                    "color: #22c55e; font-weight: bold; font-size: 13px; padding: 2px 6px; background-color: #052e16; border: 1px solid #16a34a; border-radius: 4px;"
+                )
+            if phase == Phase.INTAKE and not demo.patient_id:
+                self.input_id.setFocus()
 
     def reset_session(self):
         self.active_patient = None

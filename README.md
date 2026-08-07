@@ -2,6 +2,8 @@
 
 Một phần mềm Windows chuyên dụng dành cho các khoa/phòng khám y tế (Phục hồi chức năng, Da liễu, Tai Mũi Họng) hỗ trợ chụp ảnh bệnh nhân rảnh tay qua **Bàn đạp chân (USB Foot Pedal)** hoặc **Giọng nói offline ("Chụp")**, tự động phân loại ảnh theo Mã Bệnh Án và lưu vết kiểm toán y tế.
 
+**Phiên khám (v1):** F1 mở → F5/barcode lưới hồ sơ → F2 khóa & chụp → pedal chỉ chụp → F4 Standby. Spec: [`docs/SPEC_HANDS_FREE_SESSION_V1.md`](docs/SPEC_HANDS_FREE_SESSION_V1.md) · Hướng dẫn: [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md).
+
 ---
 
 ## 🚀 Hướng Dẫn Nhanh (Quick Start)
