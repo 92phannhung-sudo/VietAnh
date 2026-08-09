@@ -25,6 +25,8 @@ class ClinicalCockpitWidget(QWidget):
         self.active_patient = None
         self.captured_photos = []
         self.is_session_open = False
+        self._camera_hw_error = None  # str | None — last camera hardware failure
+        self._last_phase = None
         self.setup_ui()
         self.connect_signals()
         self.update_session_ui_state(False)
@@ -312,10 +314,16 @@ class ClinicalCockpitWidget(QWidget):
         for inp in (self.input_id, self.input_name, self.input_birth, self.input_gender):
             inp.blockSignals(True)
 
-        self.input_id.setText(demo.patient_id or "")
-        self.input_name.setText(demo.full_name or "")
+        def _ui_text(val) -> str:
+            if val is None:
+                return ""
+            s = str(val).strip()
+            return "" if s.lower() == "none" else s
+
+        self.input_id.setText(_ui_text(demo.patient_id))
+        self.input_name.setText(_ui_text(demo.full_name))
         self.input_birth.setText("" if demo.birth_year is None else str(demo.birth_year))
-        self.input_gender.setText(demo.gender or "")
+        self.input_gender.setText(_ui_text(demo.gender))
 
         editable = aff.editable
         self.input_id.setEnabled(is_open and Field.PATIENT_ID in editable)
@@ -350,11 +358,6 @@ class ClinicalCockpitWidget(QWidget):
             )
             self.lbl_status_badge.setStyleSheet(
                 "color: #94a3b8; font-weight: bold; font-size: 13px; padding: 2px 6px; background-color: #1e293b; border-radius: 4px;"
-            )
-            self.camera_label.setPixmap(QPixmap())
-            self.camera_label.setText(
-                "⏸️ HỆ THỐNG ĐANG Ở CHẾ ĐỘ CHỜ (KẾT THÚC PHIÊN)\n\n"
-                "[Bàn đạp, Giọng nói và Camera tạm dừng]\n[BẤM F1 ĐỂ MỞ ĐẦU PHIÊN KHÁM MỚI]"
             )
             self.active_patient = None
         elif phase == Phase.LOCKED_CAPTURE:
@@ -404,6 +407,75 @@ class ClinicalCockpitWidget(QWidget):
                 )
             if phase == Phase.INTAKE and not demo.patient_id:
                 self.input_id.setFocus()
+
+        self._last_phase = phase
+        self.refresh_camera_panel(phase)
+
+    def set_camera_hardware_error(self, message: str | None) -> None:
+        """Show/clear camera HW failure on the live panel (not Standby copy)."""
+        self._camera_hw_error = (message or "").strip() or None
+        self.refresh_camera_panel(self._last_phase)
+
+    def clear_camera_hardware_error(self) -> None:
+        if self._camera_hw_error:
+            self._camera_hw_error = None
+
+    def refresh_camera_panel(self, phase=None) -> None:
+        """Bind camera placeholder to session phase + hardware status."""
+        from src.patient_session_controller import Phase
+
+        if phase is None:
+            phase = self._last_phase
+
+        # Live frames already painted — don't clobber unless error / standby
+        has_live = (
+            self.camera_label.pixmap() is not None
+            and not self.camera_label.pixmap().isNull()
+        )
+
+        if phase is None or phase == Phase.STANDBY:
+            self.camera_label.setPixmap(QPixmap())
+            self.camera_label.setStyleSheet(
+                "background-color: #020617; border: 2px dashed #38bdf8; border-radius: 8px; "
+                "color: #38bdf8; font-weight: bold; font-size: 13px;"
+            )
+            self.camera_label.setText(
+                "⏸️ HỆ THỐNG ĐANG Ở CHẾ ĐỘ CHỜ (KẾT THÚC PHIÊN)\n\n"
+                "[Bàn đạp, Giọng nói và Camera tạm dừng]\n"
+                "[BẤM F1 ĐỂ MỞ ĐẦU PHIÊN KHÁM MỚI]"
+            )
+            return
+
+        if self._camera_hw_error:
+            self.camera_label.setPixmap(QPixmap())
+            self.camera_label.setStyleSheet(
+                "background-color: #450a0a; border: 2px solid #ef4444; border-radius: 8px; "
+                "color: #fecaca; font-weight: bold; font-size: 13px;"
+            )
+            self.camera_label.setText(
+                "📷 LỖI PHẦN CỨNG — KHÔNG KẾT NỐI ĐƯỢC CAMERA\n\n"
+                f"{self._camera_hw_error}\n\n"
+                "[Kiểm tra USB / quyền Camera (macOS) / chọn lại camera ở Tab Cài đặt]"
+            )
+            return
+
+        if has_live:
+            return
+
+        self.camera_label.setStyleSheet(
+            "background-color: #020617; border: 2px dashed #38bdf8; border-radius: 8px; "
+            "color: #38bdf8; font-weight: bold; font-size: 13px;"
+        )
+        if phase == Phase.LOCKED_CAPTURE:
+            self.camera_label.setText(
+                "📷 ĐANG GHI ẢNH — chờ luồng camera…\n\n"
+                "[Pedal / Space / giọng \"chụp\" để lưu ảnh]"
+            )
+        else:
+            self.camera_label.setText(
+                "📷 PHIÊN ĐÃ MỞ — đang chờ camera…\n\n"
+                "[Nhập hồ sơ → F2 Bắt đầu chụp]"
+            )
 
     def reset_session(self):
         self.active_patient = None

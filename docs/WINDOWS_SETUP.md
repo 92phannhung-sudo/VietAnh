@@ -2,7 +2,7 @@
 # 354 EMR Workstation — Offline Patient Photo Capture System
 
 > **Tài liệu dành cho kỹ thuật viên IT bệnh viện.**  
-> Cập nhật: 2026-08-06
+> Cập nhật: 2026-08-09
 
 ---
 
@@ -57,6 +57,10 @@ pip install -r requirements.txt
 > pipwin install pyaudio
 > ```
 > Hoặc tải file `.whl` phù hợp từ https://www.lfd.uci.edu/~gohlke/pythonlibs/#pyaudio
+>
+> **Python khuyến nghị:** 3.10–3.12. Tránh 3.14+ cho đến khi các wheel (`rapidocr`, …) sẵn sàng.
+>
+> **macOS (dev):** xem [`docs/MACOS_SETUP.md`](MACOS_SETUP.md).
 
 > **⚠️ LƯU Ý VỀ pyzbar TRÊN WINDOWS:**  
 > Thư viện `pyzbar` yêu cầu file `libzbar-64.dll`. Nếu thiếu:  
@@ -210,7 +214,8 @@ pip install PyAudio-0.2.14-cp310-cp310-win_amd64.whl
 - Kiểm tra Microphone đã được chọn đúng trong Tab Cài đặt.
 - Đảm bảo thư mục `models/sherpa-onnx-zipformer-vi-30M-int8-2026-02-09/` tồn tại và chứa đủ file `encoder.int8.onnx`, `decoder.onnx`, `joiner.int8.onnx`, `tokens.txt`.
 - Kiểm tra thanh Volume Gauge trên giao diện (phải nhảy khi nói).
-- Nói rõ ràng, cách micro 30-50cm: *"Chụp"*, *"Xóa"*, *"Tìm kiếm"*, *"Hoàn thành"*.
+- Nói rõ ràng, cách micro 30-50cm: *"Chụp"*, *"Xóa"*, *"Tìm kiếm"*, *"Mở phiên"*, *"Bắt đầu chụp"*, *"Hoàn thành"* / *"Kết thúc phiên"*.
+- Năm sinh bị ASR cắt (vd. *"một chín chín"*): nói thêm chữ số cuối (*"chín"* → 1999). Hệ thống không tự pad thành 1990.
 - Nếu môi trường ồn, cài thêm `rapidfuzz` để bật fuzzy matching: `pip install rapidfuzz`
 
 ### 6.6 Ứng dụng khởi động chậm lần đầu

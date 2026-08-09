@@ -429,9 +429,9 @@ class PatientSessionController:
 
     def _apply_field(self, f: Field, value: object) -> None:
         if f == Field.PATIENT_ID:
-            self._demo = replace(self._demo, patient_id=str(value).strip() or None)
+            self._demo = replace(self._demo, patient_id=_clean_str(value))
         elif f == Field.FULL_NAME:
-            self._demo = replace(self._demo, full_name=str(value).strip() or None)
+            self._demo = replace(self._demo, full_name=_clean_str(value))
         elif f == Field.BIRTH_YEAR:
             if value is None or value == "":
                 year = None
@@ -439,7 +439,7 @@ class PatientSessionController:
                 year = int(value)
             self._demo = replace(self._demo, birth_year=year)
         elif f == Field.GENDER:
-            self._demo = replace(self._demo, gender=str(value).strip() or None)
+            self._demo = replace(self._demo, gender=_clean_str(value))
 
     def _on_unlock(self, fields: FrozenSet[Field]) -> list[Effect]:
         if self._phase != Phase.LOCKED_CAPTURE:
@@ -619,3 +619,13 @@ def _extract_gender(lower: str) -> Optional[str]:
         if "nam" in lower:
             return "Nam"
     return None
+
+
+def _clean_str(value: object) -> Optional[str]:
+    """Coerce field values; never turn Python None into the literal string 'None'."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() == "none":
+        return None
+    return text

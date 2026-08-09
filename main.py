@@ -13,7 +13,8 @@ from PySide6.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QComboBox, QGroupBox, QFormLayout,
     QScrollArea, QGridLayout, QStatusBar, QMessageBox, QProgressBar,
     QMenu, QListWidget, QListWidgetItem, QStackedWidget, QTableWidget,
-    QTableWidgetItem, QHeaderView, QInputDialog, QFileDialog, QProgressDialog
+    QTableWidgetItem, QHeaderView, QInputDialog, QFileDialog, QProgressDialog,
+    QSizePolicy,
 )
 from PySide6.QtGui import QImage, QPixmap, QIcon, QFont, QAction
 
@@ -1418,17 +1419,63 @@ class MainWindow(QMainWindow):
         layout.addWidget(audit_box, stretch=1)
         return widget
 
+    def _make_form_field_row(self, widgets, stretches=None):
+        """QFormLayout rows need a QWidget wrapper so fields align correctly on macOS."""
+        row_w = QWidget()
+        row = QHBoxLayout(row_w)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        if stretches is None:
+            stretches = [0] * len(widgets)
+        for widget, stretch in zip(widgets, stretches):
+            row.addWidget(widget, stretch)
+        return row_w
+
+    def _configure_settings_table(self, table, column_modes=None):
+        table.verticalHeader().setVisible(False)
+        table.setCornerButtonEnabled(False)
+        table.setAlternatingRowColors(True)
+        table.setSelectionBehavior(QTableWidget.SelectRows)
+        table.setEditTriggers(
+            QTableWidget.DoubleClicked | QTableWidget.SelectedClicked | QTableWidget.EditKeyPressed
+        )
+        table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        hdr = table.horizontalHeader()
+        hdr.setStretchLastSection(False)
+        if column_modes:
+            for col, mode in column_modes.items():
+                hdr.setSectionResizeMode(col, mode)
+        else:
+            hdr.setSectionResizeMode(QHeaderView.Stretch)
+
     # ----------------- TAB 4: HARDWARE & SETTINGS -----------------
     def build_tab4_settings(self):
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(12)
 
         group_hw = QGroupBox("CẤU HÌNH PHẦN CỨNG & GIAO DIỆN")
         form = QFormLayout(group_hw)
-        
+        form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        form.setFormAlignment(Qt.AlignTop | Qt.AlignLeft)
+        form.setRowWrapPolicy(QFormLayout.DontWrapRows)
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(10)
+
+        field_policy = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        btn_policy = QSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
         # Real Physical Camera Selection
         self.cfg_camera_select = QComboBox()
+        self.cfg_camera_select.setSizePolicy(field_policy)
+        self.cfg_camera_select.setMinimumWidth(280)
         real_cams = get_real_camera_list()
         for cam in real_cams:
             self.cfg_camera_select.addItem(f"{cam['name']} (Cổng Index {cam['index']})", cam["index"])
@@ -1437,17 +1484,20 @@ class MainWindow(QMainWindow):
         if match_idx >= 0:
             self.cfg_camera_select.setCurrentIndex(match_idx)
         self.cfg_camera_select.currentIndexChanged.connect(self.change_camera)
-        
-        cam_row = QHBoxLayout()
-        cam_row.addWidget(self.cfg_camera_select, stretch=1)
+
         btn_test_cam = QPushButton("🛠️ Test Camera (Quét Mã QR)")
+        btn_test_cam.setSizePolicy(btn_policy)
         btn_test_cam.setStyleSheet("background-color: #0284c7; color: white; padding: 4px 12px;")
         btn_test_cam.clicked.connect(self.run_test_camera)
-        cam_row.addWidget(btn_test_cam)
-        form.addRow("Chọn Camera:", cam_row)
+        form.addRow(
+            "Chọn Camera:",
+            self._make_form_field_row([self.cfg_camera_select, btn_test_cam], [1, 0]),
+        )
 
         # Microphone Selection
         self.cfg_mic_select = QComboBox()
+        self.cfg_mic_select.setSizePolicy(field_policy)
+        self.cfg_mic_select.setMinimumWidth(280)
         available_mics = voice_detector.get_available_microphones()
         self.cfg_mic_select.addItems(available_mics)
         cur_mic = self.app_config.get("microphone_name", "default")
@@ -1457,101 +1507,140 @@ class MainWindow(QMainWindow):
         else:
             self.cfg_mic_select.setCurrentIndex(0)
         self.cfg_mic_select.currentIndexChanged.connect(self.change_microphone)
-        
-        mic_row = QHBoxLayout()
-        mic_row.addWidget(self.cfg_mic_select, stretch=1)
+
         btn_test_mic = QPushButton("🛠️ Test Mic (Thử Lệnh Vozk)")
+        btn_test_mic.setSizePolicy(btn_policy)
         btn_test_mic.setStyleSheet("background-color: #0284c7; color: white; padding: 4px 12px;")
         btn_test_mic.clicked.connect(self.run_test_mic)
-        mic_row.addWidget(btn_test_mic)
-        form.addRow("Chọn Microphone (Venfish/Bluetooth/3.5mm):", mic_row)
-        
+        form.addRow(
+            "Chọn Microphone (Venfish/Bluetooth/3.5mm):",
+            self._make_form_field_row([self.cfg_mic_select, btn_test_mic], [1, 0]),
+        )
+
         # Foot pedal status info
-        self.lbl_pedal_info = QLabel("PCSensor USB FootSwitch (Gán phím F13/ALT - Tự động phân biệt Cử chỉ 1, 2, 3 giậm & Nhấn giữ)")
+        self.lbl_pedal_info = QLabel(
+            "PCSensor USB FootSwitch (Gán phím F13/ALT - Tự động phân biệt Cử chỉ 1, 2, 3 giậm & Nhấn giữ)"
+        )
         self.lbl_pedal_info.setStyleSheet("color: #38bdf8; font-weight: bold;")
-        pedal_row = QHBoxLayout()
-        pedal_row.addWidget(self.lbl_pedal_info, stretch=1)
+        self.lbl_pedal_info.setWordWrap(True)
+        self.lbl_pedal_info.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+
         btn_test_pedal = QPushButton("🛠️ Test Bàn Đạp Chân")
+        btn_test_pedal.setSizePolicy(btn_policy)
         btn_test_pedal.setStyleSheet("background-color: #0284c7; color: white; padding: 4px 12px;")
         btn_test_pedal.clicked.connect(self.run_test_pedal)
-        pedal_row.addWidget(btn_test_pedal)
-        form.addRow("Bàn đạp chân (Pedal):", pedal_row)
-        
+        form.addRow(
+            "Bàn đạp chân (Pedal):",
+            self._make_form_field_row([self.lbl_pedal_info, btn_test_pedal], [1, 0]),
+        )
+
         # Theme switcher
         self.cb_theme = QComboBox()
+        self.cb_theme.setSizePolicy(field_policy)
         self.cb_theme.addItems(["Dark Slate (Mặc định)", "Light Clinical (Sáng Y tế)"])
         current_t = self.app_config.get("active_theme", "dark")
         self.cb_theme.setCurrentIndex(0 if current_t == "dark" else 1)
         self.cb_theme.currentIndexChanged.connect(self.on_theme_dropdown_changed)
         form.addRow("Chế độ màu Giao diện:", self.cb_theme)
-        
+
         # Working Directory Selection
         self.txt_working_dir = QLineEdit(str(config.get_photos_dir()))
-        dir_row = QHBoxLayout()
-        dir_row.addWidget(self.txt_working_dir, stretch=1)
+        self.txt_working_dir.setSizePolicy(field_policy)
+
         btn_browse_dir = QPushButton("📁 Chọn Thư Mục")
+        btn_browse_dir.setSizePolicy(btn_policy)
         btn_browse_dir.setStyleSheet("background-color: #0284c7; color: white; padding: 4px 12px;")
         btn_browse_dir.clicked.connect(self.browse_working_dir)
-        dir_row.addWidget(btn_browse_dir)
-        form.addRow("Thư mục lưu trữ Ảnh Bệnh án:", dir_row)
+        form.addRow(
+            "Thư mục lưu trữ Ảnh Bệnh án:",
+            self._make_form_field_row([self.txt_working_dir, btn_browse_dir], [1, 0]),
+        )
 
         # OTA Update Intranet URL
         self.txt_ota_url = QLineEdit(self.app_config.get("update_url", ""))
+        self.txt_ota_url.setSizePolicy(field_policy)
         form.addRow("Địa chỉ Cập nhật Intranet:", self.txt_ota_url)
-        
+
         btn_save_cfg = QPushButton("Lưu Cấu Hình Cài Đặt")
+        btn_save_cfg.setSizePolicy(btn_policy)
         btn_save_cfg.clicked.connect(self.save_settings_cfg)
-        form.addRow("", btn_save_cfg)
-        
+        save_row = QWidget()
+        save_layout = QHBoxLayout(save_row)
+        save_layout.setContentsMargins(0, 8, 0, 0)
+        save_layout.addWidget(btn_save_cfg)
+        save_layout.addStretch()
+        form.addRow(save_row)
+
         layout.addWidget(group_hw)
 
         # Global voice lexicon (Settings-wide)
         group_lex = QGroupBox("TỪ ĐIỂN GIỌNG NÓI TOÀN CỤC (phrase → intent)")
         lex_layout = QVBoxLayout(group_lex)
+        lex_layout.setSpacing(8)
+
         self.table_lexicon = QTableWidget()
         self.table_lexicon.setColumnCount(2)
         self.table_lexicon.setHorizontalHeaderLabels(["Câu lệnh (phrase)", "Intent"])
-        self.table_lexicon.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.table_lexicon.setMinimumHeight(180)
+        self._configure_settings_table(self.table_lexicon)
+        self.table_lexicon.setMinimumHeight(200)
         lex_layout.addWidget(self.table_lexicon)
-        lex_btns = QHBoxLayout()
+
+        lex_btns = QWidget()
+        lex_btn_row = QHBoxLayout(lex_btns)
+        lex_btn_row.setContentsMargins(0, 0, 0, 0)
+        lex_btn_row.setSpacing(8)
         btn_lex_add = QPushButton("Thêm dòng")
+        btn_lex_add.setSizePolicy(btn_policy)
         btn_lex_add.clicked.connect(self._lexicon_add_row)
         btn_lex_save = QPushButton("Lưu từ điển giọng")
+        btn_lex_save.setSizePolicy(btn_policy)
         btn_lex_save.clicked.connect(self._save_voice_lexicon)
-        lex_btns.addWidget(btn_lex_add)
-        lex_btns.addWidget(btn_lex_save)
-        lex_btns.addStretch()
-        lex_layout.addLayout(lex_btns)
+        lex_btn_row.addWidget(btn_lex_add)
+        lex_btn_row.addWidget(btn_lex_save)
+        lex_btn_row.addStretch()
+        lex_layout.addWidget(lex_btns)
         layout.addWidget(group_lex)
         self._load_lexicon_table()
 
         # Hardware Scanner & Diagnostic Console Box
         group_scan = QGroupBox("QUÉT & CHẨN ĐOÁN PHẦN CỨNG HỆ THỐNG")
         scan_layout = QVBoxLayout(group_scan)
-        
+        scan_layout.setSpacing(8)
+
         scan_top = QHBoxLayout()
         self.btn_scan_hw = QPushButton("🔍 QUÉT PHẦN CỨNG (Scan Hardware)")
+        self.btn_scan_hw.setSizePolicy(btn_policy)
         self.btn_scan_hw.clicked.connect(self.scan_system_hardware)
         scan_top.addWidget(self.btn_scan_hw)
-        
+
         self.lbl_hw_status = QLabel("Bấm nút để bắt đầu quét phần cứng...")
         self.lbl_hw_status.setStyleSheet("color: #38bdf8; font-weight: bold;")
-        scan_top.addWidget(self.lbl_hw_status)
-        scan_top.addStretch()
+        self.lbl_hw_status.setWordWrap(True)
+        scan_top.addWidget(self.lbl_hw_status, stretch=1)
         scan_layout.addLayout(scan_top)
-        
+
         self.table_hw = QTableWidget()
         self.table_hw.setColumnCount(5)
-        self.table_hw.setHorizontalHeaderLabels(["Loại phần cứng", "Tên phần cứng", "Trạng thái", "Thông tin chi tiết / Cổng", "Thao tác Test"])
-        self.table_hw.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.table_hw.setFixedHeight(210)
+        self.table_hw.setHorizontalHeaderLabels(
+            ["Loại phần cứng", "Tên phần cứng", "Trạng thái", "Thông tin chi tiết / Cổng", "Thao tác Test"]
+        )
+        self._configure_settings_table(
+            self.table_hw,
+            {
+                0: QHeaderView.ResizeToContents,
+                1: QHeaderView.Stretch,
+                2: QHeaderView.ResizeToContents,
+                3: QHeaderView.Stretch,
+                4: QHeaderView.ResizeToContents,
+            },
+        )
+        self.table_hw.setMinimumHeight(220)
         scan_layout.addWidget(self.table_hw)
-        
+
         layout.addWidget(group_scan)
-        layout.addStretch()
+        scroll.setWidget(content)
         self.load_initial_hardware_cache()
-        return widget
+        return scroll
 
     # ----------------- OPERATOR & STAFF LOGIC -----------------
     def load_operator_dropdown(self):
@@ -1988,8 +2077,12 @@ class MainWindow(QMainWindow):
 
     def attach_table_test_button(self, row, device_type):
         btn = QPushButton("🛠️ Test Thiết Bị")
-        btn.setStyleSheet("background-color: #0284c7; color: white; padding: 2px 8px; font-weight: bold; border-radius: 4px;")
-        
+        btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        btn.setStyleSheet(
+            "background-color: #0284c7; color: white; padding: 2px 8px; "
+            "font-weight: bold; border-radius: 4px;"
+        )
+
         dtype = device_type.lower()
         if "camera" in dtype or "webcam" in dtype:
             btn.clicked.connect(self.run_test_camera)
@@ -2001,8 +2094,14 @@ class MainWindow(QMainWindow):
             btn.clicked.connect(lambda: self.run_test_com_port("COM1"))
         else:
             btn.clicked.connect(self.run_test_camera)
-            
-        self.table_hw.setCellWidget(row, 4, btn)
+
+        cell = QWidget()
+        cell_layout = QHBoxLayout(cell)
+        cell_layout.setContentsMargins(4, 2, 4, 2)
+        cell_layout.addWidget(btn)
+        cell_layout.addStretch()
+        self.table_hw.setRowHeight(row, max(self.table_hw.rowHeight(row), 36))
+        self.table_hw.setCellWidget(row, 4, cell)
 
     @Slot(list)
     def refresh_hardware_grid_table(self):
@@ -2354,6 +2453,8 @@ class MainWindow(QMainWindow):
             return
         if hasattr(self, 'cockpit_widget') and self.cockpit_widget and not self.cockpit_widget.is_session_open:
             return
+        if hasattr(self, 'cockpit_widget') and self.cockpit_widget:
+            self.cockpit_widget.clear_camera_hardware_error()
         feed_size = self.camera_feed.size()
         if feed_size.width() <= 5 or feed_size.height() <= 5:
             return
@@ -2364,6 +2465,17 @@ class MainWindow(QMainWindow):
             Qt.SmoothTransformation
         )
         self.camera_feed.setPixmap(scaled_pixmap)
+
+    @Slot(str)
+    def handle_thread_error(self, err_msg):
+        logger.warning(f"[THREAD_ERROR] {err_msg}")
+        self.status_bar.showMessage(f"⚠️ {err_msg}", 6000)
+        err_l = (err_msg or "").lower()
+        if "camera" in err_l or "cam" in err_l or "webcam" in err_l:
+            if hasattr(self, "cockpit_widget") and self.cockpit_widget:
+                self.cockpit_widget.set_camera_hardware_error(err_msg)
+        if hasattr(self, 'lbl_voice_status') and ("mic" in err_l or "voice" in err_l or "model" in err_l):
+            self.lbl_voice_status.setText("Microphone: Tự động kết nối lại...")
 
     @Slot(int)
     def change_camera(self, index=None):
@@ -2691,13 +2803,6 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def update_status_bar_msg(self, msg):
         self.status_bar.showMessage(msg, 5000)
-
-    @Slot(str)
-    def handle_thread_error(self, err_msg):
-        logger.warning(f"[THREAD_ERROR] {err_msg}")
-        self.status_bar.showMessage(f"⚠️ {err_msg}", 6000)
-        if hasattr(self, 'lbl_voice_status'):
-            self.lbl_voice_status.setText("Microphone: Tự động kết nối lại...")
 
     def eventFilter(self, watched, event):
         if event.type() == QEvent.KeyPress:

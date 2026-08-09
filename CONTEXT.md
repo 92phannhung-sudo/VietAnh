@@ -41,6 +41,12 @@ Chuỗi bắt buộc trong một ca khám (một Bệnh Nhân):
 
 **Định tuyến giọng pha Intake:** **Pattern-only** — chỉ chấp nhận utterance khớp mẫu demography (*"Họ và tên…"*, *"Năm sinh…"*, *"Giới tính…"*, hoặc câu đủ các trường được phép). Câu không khớp pattern bị bỏ qua; không ghi tự do vào ô đang focus.
 
+**Năm sinh ASR cắt số (truncated year):** Zipformer đôi khi nuốt chữ số cuối (*"một chín chín"* thay vì *"một chín chín chín"*). Hệ thống **không** được pad `199→1990`. Thay vào đó giữ prefix 3 số và chờ utterance tiếp theo là một chữ số (*"chín"* → `1999`). Module: `incomplete_birth_year_prefix` / `complete_truncated_birth_year` trong `patient_voice_parser` + `_pending_year_prefix` trong `voice_detector`.
+
+**Demography field coercion:** Gõ xóa ô / `UiFieldEdit(..., None)` không được biến thành chuỗi literal `"None"`. Domain dùng `_clean_str`; Cockpit bind qua `_ui_text` (bỏ `"none"`).
+
+**Camera panel theo phase:** Chỉ Standby hiện copy “chế độ chờ / bấm F1”. Khi phiên đang mở mà camera lỗi phần cứng → panel đỏ lỗi USB/quyền; khi chờ stream → “đang chờ camera”, không revert Standby.
+
 **Barcode / QR:** Trong **Intake/Ready**, quét mã là **đầu vào tìm kiếm**: luôn mở hoặc cập nhật **lưới hồ sơ** (lọc đúng mã) — **không** ghi thẳng banner Cockpit, **không** tự chụp. Chọn một dòng trên lưới mới nạp demography. Ngoài các phase đó: Standby bỏ qua; Locked/Correction gặp mã khác BN đang mở → bỏ qua + cảnh báo.
 
 ### Standby QR & Input Mode (Chế độ Chờ / Standby)
@@ -89,3 +95,12 @@ Khi **Kết thúc phiên** (F4 / giọng “kết thúc” / “chuyển bệnh 
 2. Dọn form Cockpit và về **Standby** (tắt cam/mic/pedal).
 3. **Không** xuất PDF / báo cáo (đã loại khỏi phạm vi).
 4. BN tiếp theo: F1 mở phiên lại rồi nạp liệu / tìm kiếm.
+
+## 3. Dữ liệu ứng dụng theo OS
+| OS | Thư mục dữ liệu (`config.get_user_data_dir`) |
+|---|---|
+| Windows | `%APPDATA%\PatientCaptureApp\` |
+| macOS | `~/Library/Application Support/PatientCaptureApp/` |
+| Linux | `~/.local/share/PatientCaptureApp/` |
+
+Chi tiết cài đặt: `docs/WINDOWS_SETUP.md`, `docs/MACOS_SETUP.md`.

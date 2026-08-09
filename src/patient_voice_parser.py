@@ -116,26 +116,62 @@ def _viet_words_to_digits(text: str) -> str:
 def _normalize_year(value: str) -> str | None:
     """
     Normalize a numeric string into a valid birth year.
-    Handles ASR truncation: sherpa-onnx sometimes drops the last digit word.
-      '1987' → '1987' (4 digits, valid)
-      '199'  → '1990' (3 digits, ASR truncated → pad with 0)
-      '200'  → '2000' (3 digits, ASR truncated → pad with 0)
-      '35'   → None   (too short for a year)
+
+    Incomplete ASR (3 digits) must NOT invent a last digit — padding with 0
+    turned "một chín chín" (meant 1999) into 1990. Callers should keep a
+    pending prefix and wait for the final digit instead.
     """
     if not value or not value.isdigit():
         return None
     n = int(value)
     current_year = datetime.datetime.now().year
-    # 4-digit year
     if len(value) == 4 and 1900 <= n <= current_year:
         return value
-    # 3-digit truncated year (ASR dropped last digit) → pad with 0
-    if len(value) == 3 and 190 <= n <= 202:
-        padded = n * 10
-        if 1900 <= padded <= current_year:
-            return str(padded)
     return None
 
+
+def incomplete_birth_year_prefix(text: str) -> str | None:
+    """
+    If utterance is năm-sinh + exactly 3 digits (ASR truncated year), return those digits.
+    Example: "năm sinh một chín chín" → "199"
+    """
+    lowered = _viet_words_to_digits(text.strip().lower())
+    m = re.search(
+        r"(?:năm\s+sinh|sinh\s+năm|nam\s+sinh)\s+(\d{3})\b",
+        lowered,
+    )
+    if not m:
+        # bare 3-digit after conversion when pending birth_year fills
+        m = re.fullmatch(r"(\d{3})", lowered.strip())
+    if not m:
+        return None
+    prefix = m.group(1)
+    n = int(prefix)
+    if 190 <= n <= 202:
+        return prefix
+    return None
+
+
+def complete_truncated_birth_year(prefix: str, text: str) -> str | None:
+    """Append one final digit (word or numeral) to a 3-digit truncated year prefix."""
+    if not prefix or len(prefix) != 3 or not prefix.isdigit():
+        return None
+    lowered = _viet_words_to_digits(text.strip().lower()).strip()
+    digit: str | None = None
+    if lowered in _VIET_DIGIT_MAP:
+        digit = str(_VIET_DIGIT_MAP[lowered])
+    else:
+        m = re.fullmatch(r"(\d)", lowered)
+        if m:
+            digit = m.group(1)
+        else:
+            # single digit word that survived conversion as digit already
+            m = re.fullmatch(r"(\d)", lowered.split()[-1] if lowered else "")
+            if m:
+                digit = m.group(1)
+    if digit is None:
+        return None
+    return _normalize_year(prefix + digit)
 
 # ---------------------------------------------------------------------------
 # System control commands that should NEVER be parsed as patient names.
@@ -456,15 +492,18 @@ def fill_pending_field(field: str, text: str) -> dict | None:
         return result
 
     elif field == "birth_year":
-        # Try year match (3-4 digits)
-        m = re.search(r'\b(\d{3,4})\b', lowered)
+        # Try year match (4 digits only — 3-digit incomplete must not invent last digit)
+        m = re.search(r"\b(\d{4})\b", lowered)
         if m:
             normalized = _normalize_year(m.group(1))
             if normalized:
                 result["birth_year"] = normalized
                 return result
-        # Try age (1-2 digits)
-        m = re.search(r'\b(\d{1,2})\b', lowered)
+        # Exactly 3 digits → incomplete; let caller set truncated pending (return None)
+        if incomplete_birth_year_prefix(lowered) or re.fullmatch(r"\d{3}", lowered.strip()):
+            return None
+        # Try age (1-2 digits) only when clearly an age, not a truncated year
+        m = re.search(r"\b(\d{1,2})\b", lowered)
         if m:
             val = int(m.group(1))
             if 0 < val <= 120:

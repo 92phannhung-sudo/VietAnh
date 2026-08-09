@@ -136,6 +136,19 @@ QLineEdit, QComboBox, QSpinBox {
     border-radius: 4px;
     padding: 6px;
     color: #f8fafc;
+    min-height: 20px;
+}
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 24px;
+    border-left: 1px solid #334155;
+}
+QComboBox QAbstractItemView {
+    background-color: #0f172a;
+    color: #f8fafc;
+    selection-background-color: #1e293b;
+    border: 1px solid #334155;
 }
 QLineEdit:focus, QComboBox:focus {
     border: 1px solid #38bdf8;
@@ -185,6 +198,14 @@ QTableWidget {
     gridline-color: #1e293b;
     border: 1px solid #1e293b;
     color: #e2e8f0;
+    alternate-background-color: #141c28;
+}
+QTableWidget::item {
+    padding: 4px 6px;
+}
+QTableCornerButton::section {
+    background-color: #1e2530;
+    border: 1px solid #1e293b;
 }
 QHeaderView::section {
     background-color: #1e2530;
@@ -239,6 +260,19 @@ QLineEdit, QComboBox, QSpinBox {
     border-radius: 4px;
     padding: 6px;
     color: #0f172a;
+    min-height: 20px;
+}
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 24px;
+    border-left: 1px solid #cbd5e1;
+}
+QComboBox QAbstractItemView {
+    background-color: #ffffff;
+    color: #0f172a;
+    selection-background-color: #e2e8f0;
+    border: 1px solid #cbd5e1;
 }
 QLineEdit:focus, QComboBox:focus {
     border: 1px solid #0284c7;
@@ -288,6 +322,14 @@ QTableWidget {
     gridline-color: #e2e8f0;
     border: 1px solid #e2e8f0;
     color: #0f172a;
+    alternate-background-color: #f8fafc;
+}
+QTableWidget::item {
+    padding: 4px 6px;
+}
+QTableCornerButton::section {
+    background-color: #f1f5f9;
+    border: 1px solid #cbd5e1;
 }
 QHeaderView::section {
     background-color: #f1f5f9;

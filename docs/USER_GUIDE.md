@@ -9,9 +9,16 @@ Tài liệu này hướng dẫn chi tiết cách khởi chạy, cấu hình ph�
 ## 1. Hướng Dẫn Khởi Chạy
 
 ### Khởi chạy phần mềm
-Mở cửa sổ **PowerShell** tại thư mục ứng dụng và chạy:
+
+**Windows** — PowerShell tại thư mục ứng dụng:
 ```powershell
 .venv\Scripts\python main.py
+```
+
+**macOS / Linux** — xem `docs/MACOS_SETUP.md` (khuyến nghị Python 3.12 venv):
+```bash
+source .venv/bin/activate
+python main.py
 ```
 
 ### 2. Thoát Ứng dụng An toàn
@@ -30,13 +37,16 @@ Mở cửa sổ **PowerShell** tại thư mục ứng dụng và chạy:
    * **F5** → lưới hồ sơ gần đây / lọc theo mã–tên–năm sinh–giới tính.  
    * Gõ tay 4 field: Mã BN, Họ tên, Năm sinh, Giới tính.  
    * Nói pattern demography (họ tên / năm sinh / giới tính) — **giọng không ghi Mã BN**.  
+   * Năm sinh: nếu ASR thiếu số cuối (vd. nghe *"một chín chín"*), hệ thống **chờ** bạn nói thêm chữ số cuối (*"chín"* → 1999) — **không** tự điền 1990.  
 3. Đủ 4 field → Ready. **F2 · Bắt đầu chụp** khóa hồ sơ (Locked Capture).  
 4. **Chụp ảnh** (chỉ khi Locked):  
    * Bàn đạp chân = **chỉ chụp** (không xóa / không đổi BN).  
    * Phím **Space** hoặc nói **"chụp"**.  
 5. **Xóa ảnh gần nhất:** phím **Delete** hoặc nói **"xóa"** (không dùng pedal). Có hoàn tác ~5 giây trên status bar.  
 6. **F4 · Kết thúc phiên** → lưu hồ sơ, tắt thiết bị, về Standby. BN tiếp theo phải F1 lại.  
-7. Alias thoại kết thúc: *"kết thúc phiên"*, *"hoàn thành"*, *"chuyển bệnh nhân mới"*.
+7. Alias thoại mở phiên / chụp / kết thúc: *"mở phiên"*, *"bắt đầu chụp"* / *"bắt đầu khám"*, *"kết thúc phiên"*, *"hoàn thành"*, *"chuyển bệnh nhân mới"*.  
+8. **Camera lỗi** khi đang phiên: khung giữa hiện panel đỏ lỗi phần cứng (USB / quyền Camera trên macOS / chọn lại camera Tab Cài đặt) — **không** hiện chữ “chế độ chờ / bấm F1” khi phiên vẫn đang mở.  
+9. Ô Mã BN trống khi chưa nhập — **không** được hiện chữ `None` (đó là lỗi cũ đã vá).
 
 ### [ Tab 2 ] Thư mục bệnh án (xem / duyệt)
 

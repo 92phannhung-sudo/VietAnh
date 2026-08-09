@@ -49,6 +49,17 @@ class TestPatientSessionController(unittest.TestCase):
         self.assertTrue(out.view.affordances.can_open_search)
         self.assertEqual(out.view.affordances.voice_mode, "intake_pattern")
 
+    def test_clearing_patient_id_does_not_store_literal_none(self):
+        """Regression: str(None) used to persist as patient_id='None' on UI."""
+        self.ctrl.handle(Hotkey("F1"))
+        self.ctrl.handle(UiFieldEdit(Field.PATIENT_ID, "BN001"))
+        out = self.ctrl.handle(UiFieldEdit(Field.PATIENT_ID, None))
+        self.assertIsNone(out.view.demography.patient_id)
+        out = self.ctrl.handle(UiFieldEdit(Field.PATIENT_ID, "None"))
+        self.assertIsNone(out.view.demography.patient_id)
+        out = self.ctrl.handle(UiFieldEdit(Field.FULL_NAME, None))
+        self.assertIsNone(out.view.demography.full_name)
+
     def test_gate_incomplete_stays_intake_f2_rejected(self):
         self.ctrl.handle(Hotkey("F1"))
         self.ctrl.handle(UiFieldEdit(Field.PATIENT_ID, "BN001"))

@@ -192,6 +192,9 @@ Chi tiết type: `docs/PATIENT_SESSION_CONTROLLER_SPEC.md`.
 - [ ] Xóa Cockpit: toast Undo; Tab2 xóa: confirm.  
 - [ ] Lexicon đổi ở Settings áp dụng không cần theo NV.  
 - [ ] Bảng transition `handle` có unit test cho các dòng trên.
+- [ ] `UiFieldEdit(..., None)` / xóa ô không lưu literal `"None"` trên demography.
+- [ ] ASR năm sinh 3 số (*"một chín chín"*) không pad thành `1990`; chờ digit cuối hoặc re-speak đủ 4 số.
+- [ ] Khi phase ≠ Standby và camera lỗi HW: UI hiện lỗi phần cứng, không hiện copy Standby “bấm F1”.
 
 ---
 

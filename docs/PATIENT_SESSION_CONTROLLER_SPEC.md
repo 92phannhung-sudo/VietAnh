@@ -125,6 +125,10 @@ SessionView:
 
 **Gate:** `patient_id` ∧ `full_name` ∧ `birth_year` ∧ `gender` → `begin_capture = True`.
 
+**Field coercion (`UiFieldEdit` / `_apply_field`):** Chuỗi demography (`patient_id`, `full_name`, `gender`) đi qua `_clean_str`: `None` / `""` / literal `"None"` / `"none"` → `None` trong model (ô UI trống). **Cấm** `str(None)` vì tạo chuỗi `"None"` và làm gate hiểu nhầm là đã có Mã BN. `birth_year` vẫn `None` hoặc `int`.
+
+**Camera UI (shell, không thuộc domain):** `SessionView.phase` điều khiển placeholder camera. Standby → copy chờ F1. Phase khác + lỗi HW → panel lỗi; phase khác + chưa có frame → “đang chờ camera”. Domain không phát Effect riêng cho lỗi camera — MainWindow/`ClinicalCockpitWidget` gắn từ `handle_thread_error`.
+
 ---
 
 ## 5. `Effect` — MainWindow phải chạy hết

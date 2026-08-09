@@ -1,6 +1,52 @@
 # NHẬT KÝ HOẠT ĐỘNG DỰ ÁN (WORK LOG)
 *Cập nhật tự động bởi Agent*
 
+## 2026-08-08 → 2026-08-09 — Chạy thử macOS + vá voice / camera / demography UI
+- **Trạng thái chung:** Hoàn thành — commit vào `main` + push
+- **Nhánh:** `main`
+- **Nhiệm vụ:** Smoke macOS, sửa regression năm sinh ASR, panel lỗi camera, chữ `"None"` trên ô Mã BN, polish Tab Cài đặt (macOS layout)
+
+### 1. Các việc đã hoàn thành
+
+#### Runtime / nền tảng
+- [x] Chạy `main.py` trên macOS (Python 3.12 venv); log `/tmp/patient_capture_run.log`
+- [x] `config.get_user_data_dir()` đã dùng `~/Library/Application Support/PatientCaptureApp/` (commit trước `f830865`)
+- [x] Ghi nhận giới hạn macOS: Camera cần quyền Privacy; pedal `keyboard` → OSError 13 (Accessibility); font "Segoe UI" alias
+
+#### Voice — năm sinh bị cắt số cuối
+- [x] Bỏ pad `199 → 1990` trong `_normalize_year` (`src/patient_voice_parser.py`)
+- [x] `incomplete_birth_year_prefix` + `complete_truncated_birth_year`; `voice_detector` giữ `_pending_year_prefix`
+- [x] Filter nhiễu ASR: `ờ`, `không`, `trong`, `<`, …
+- [x] Siết keyword: `"mở phiên"` / `"bắt đầu chụp"` (tránh khớp nhầm `"bắt đầu"` đơn)
+- [x] Tests: `tests/test_patient_voice_parser.py`
+
+#### UI / session demography
+- [x] Bug ô Mã BN hiện `"None"`: `str(None)` trong `_apply_field` → `_clean_str`; sanitize `_ui_text` khi bind Cockpit
+- [x] Regression: `test_clearing_patient_id_does_not_store_literal_none`
+- [x] Panel camera: Standby text **không** đè khi đang phiên; lỗi HW hiện đỏ (`set_camera_hardware_error` / `refresh_camera_panel`); `main.handle_thread_error` đẩy lỗi camera
+
+#### Tab Cài đặt (macOS)
+- [x] `QScrollArea` + form row wrapper + bảng settings resize modes; QSS ComboBox/TableWidget dark+light
+
+#### Tài liệu
+- [x] `CONTEXT.md`, `USER_GUIDE.md`, `PATIENT_SESSION_CONTROLLER_SPEC.md`, `WINDOWS_SETUP.md`, `MACOS_SETUP.md`, `README.md`, WORK_LOG này
+
+### 2. Kiểm thử
+- Unittest session + voice parser (trước commit)
+- Smoke: F1 / voice họ tên–năm sinh–GT; camera fail đúng panel lỗi (không còn copy Standby khi Locked)
+
+### 3. Nợ kỹ thuật còn lại
+- [ ] Seed operator `"BS. Nguyễn Văn A"` / `NV001` vẫn hardcode khởi tạo UI (demo) — không phải bug `str(None)`
+- [ ] Legacy `load_patient` / grid card f-string vẫn có thể hiện `None` nếu dict thiếu field
+- [ ] Pedal trên macOS cần Accessibility; camera cần TCC Camera
+- [ ] Các nợ cũ từ 2026-08-07 (dead `build_tab1_capture`, MultiModalDispatcher legacy, …)
+
+### 4. Tham chiếu nhanh
+- Spec session: `docs/SPEC_HANDS_FREE_SESSION_V1.md`
+- macOS: `docs/MACOS_SETUP.md`
+
+---
+
 ## 2026-08-07 - Phiên làm việc lúc ~20:00–22:12
 - **Trạng thái chung:** Hoàn thành — đã merge vào `main`
 - **Nhánh:** `feat/hands-free-session` → fast-forward merge `main` @ `a43378b`
