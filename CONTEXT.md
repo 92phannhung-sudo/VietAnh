@@ -39,10 +39,14 @@ Chuỗi bắt buộc trong một ca khám (một Bệnh Nhân):
 4. **Kết thúc phiên (F4 / “chuyển bệnh nhân mới” / “hoàn thành”)** — chốt ảnh + CSDL, dọn form, và **về Standby** (tắt cam/mic/pedal) — an toàn chống chụp/nhầm hồ sơ giữa hai BN. BN mới bắt buộc F1 mở phiên lại rồi mới nạp liệu.
    **hoặc** trong lúc chưa Kết thúc: **Correction** — sửa demography rồi trở lại Locked Capture, vẫn cùng một Bệnh Nhân.
 
-**Định tuyến giọng pha Intake:** **Pattern-only** — chỉ chấp nhận utterance khớp mẫu demography (*"Họ và tên…"*, *"Năm sinh…"*, *"Giới tính…"*, hoặc câu đủ các trường được phép). Câu không khớp pattern bị bỏ qua; không ghi tự do vào ô đang focus.
+**Định tuyến giọng pha Intake / Tab tìm hồ sơ (chung một pattern):** **Keyword-gated only**
+1. Phải nói **đúng từ khóa** mới kích hoạt nhập ô: *"họ và tên"*, *"năm sinh"*, *"giới tính"* (hoặc *"tuổi"*).
+2. Cách dùng: (a) từ khóa + giá trị một câu, hoặc (b) từ khóa → chờ → nói giá trị.
+3. Hết cửa sổ chờ (~8s) / câu không khớp / hết tiếng nói lung tung → **không** ghi ô; phải nói lại từ khóa.
+4. **Không** nhận câu tự do ("bệnh nhân …"), không nhận `nam`/`nữ` đơn, không ghi **Mã BN** từ giọng.
+5. Cùng một pipeline `voice_detector._process_voice_for_patient` cho **Tab 1 Cockpit** và **Tab 2 bộ lọc 4 ô**.
 
-**Năm sinh ASR cắt số (truncated year):** Zipformer đôi khi nuốt chữ số cuối (*"một chín chín"* thay vì *"một chín chín chín"*). Hệ thống **không** được pad `199→1990`. Thay vào đó giữ prefix 3 số và chờ utterance tiếp theo là một chữ số (*"chín"* → `1999`). Module: `incomplete_birth_year_prefix` / `complete_truncated_birth_year` trong `patient_voice_parser` + `_pending_year_prefix` trong `voice_detector`.
-
+**Năm sinh ASR cắt số (truncated year):** Zipformer đôi khi nuốt chữ số cuối (*"một chín chín"* thay vì *"một chín chín chín"*). Chỉ khi đã có từ khóa năm sinh (hoặc đang pending năm sinh): giữ prefix 3 số và chờ chữ số cuối (*"chín"* → `1999`). **Không** pad `199→1990`.
 **Demography field coercion:** Gõ xóa ô / `UiFieldEdit(..., None)` không được biến thành chuỗi literal `"None"`. Domain dùng `_clean_str`; Cockpit bind qua `_ui_text` (bỏ `"none"`).
 
 **Camera panel theo phase:** Chỉ Standby hiện copy “chế độ chờ / bấm F1”. Khi phiên đang mở mà camera lỗi phần cứng → panel đỏ lỗi USB/quyền; khi chờ stream → “đang chờ camera”, không revert Standby.

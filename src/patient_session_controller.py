@@ -10,6 +10,8 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import FrozenSet, Optional, Sequence, Union
 
+from src.patient_voice_parser import _try_single_field
+
 
 class Phase(Enum):
     STANDBY = "standby"
@@ -295,7 +297,8 @@ class PatientSessionController:
             begin_capture=self._phase == Phase.READY and gate_ok,
             end_session=self._phase != Phase.STANDBY,
             pedal_capture=self._phase == Phase.LOCKED_CAPTURE,
-            can_open_search=self._phase in (Phase.INTAKE, Phase.READY),
+            # Standby: browse/find old records before opening a capture session
+            can_open_search=self._phase in (Phase.STANDBY, Phase.INTAKE, Phase.READY),
             voice_mode=voice_mode,
             editable=editable,
         )
@@ -375,8 +378,8 @@ class PatientSessionController:
         return [Effect.DELETE_LAST]
 
     def _open_search_recent(self) -> list[Effect]:
-        if self._phase not in (Phase.INTAKE, Phase.READY):
-            self._notice = "Chỉ tìm hồ sơ khi đang nhập liệu"
+        if self._phase not in (Phase.STANDBY, Phase.INTAKE, Phase.READY):
+            self._notice = "Không mở tìm hồ sơ khi đang chụp"
             return [Effect.WARN]
         self._search = SearchView(open=True, mode=SearchMode.RECENT, filter=SearchFilterEdit())
         return [Effect.OPEN_SEARCH_GRID]
@@ -385,9 +388,6 @@ class PatientSessionController:
         code = (code or "").strip()
         if not code:
             return []
-        if self._phase == Phase.STANDBY:
-            self._notice = "Mở phiên (F1) trước khi quét mã"
-            return [Effect.WARN]
         if self._phase in (Phase.LOCKED_CAPTURE, Phase.CORRECTION):
             if self._demo.patient_id and code != self._demo.patient_id:
                 self._notice = (
@@ -397,7 +397,7 @@ class PatientSessionController:
                 return [Effect.WARN]
             self._notice = "Mã trùng BN đang khám"
             return []
-        # Intake / Ready → search filter exact id
+        # Standby / Intake / Ready → Tab 2 (or search filter) by exact id
         filt = SearchFilterEdit(patient_id=code)
         self._search = SearchView(open=True, mode=SearchMode.FILTERED, filter=filt)
         return [Effect.OPEN_SEARCH_GRID]
@@ -454,17 +454,27 @@ class PatientSessionController:
         return []
 
     def _on_load_record(self, demo: Demography) -> list[Effect]:
-        if self._phase not in (Phase.INTAKE, Phase.READY):
-            self._notice = "Không nạp hồ sơ khi đang chụp / Standby"
+        effects: list[Effect] = []
+        if self._phase == Phase.STANDBY:
+            # Start working with an old record: open session + load demography
+            self._phase = Phase.INTAKE
+            effects.append(Effect.POWER_DEVICES_ON)
+        elif self._phase not in (Phase.INTAKE, Phase.READY):
+            self._notice = "Không nạp hồ sơ khi đang chụp"
             return [Effect.WARN]
         self._demo = demo
         self._search = SearchView()
         self._refresh_phase_after_demo()
         self._notice = f"Đã nạp hồ sơ {demo.patient_id or ''}".strip()
-        return [Effect.CLOSE_SEARCH_GRID]
+        effects.append(Effect.CLOSE_SEARCH_GRID)
+        return effects
 
     def _on_search_filter(self, filt: SearchFilterEdit) -> list[Effect]:
-        if not self._search.open or self._phase not in (Phase.INTAKE, Phase.READY):
+        if not self._search.open or self._phase not in (
+            Phase.STANDBY,
+            Phase.INTAKE,
+            Phase.READY,
+        ):
             self._notice = "Lưới tìm chưa mở"
             return [Effect.WARN]
         mode = SearchMode.FILTERED
@@ -476,7 +486,11 @@ class PatientSessionController:
         return [Effect.REFRESH_SEARCH_RESULTS]
 
     def _on_confirm_new_patient(self) -> list[Effect]:
-        if not self._search.open or self._phase not in (Phase.INTAKE, Phase.READY):
+        if not self._search.open or self._phase not in (
+            Phase.STANDBY,
+            Phase.INTAKE,
+            Phase.READY,
+        ):
             self._notice = "Không thể tạo BN mới lúc này"
             return [Effect.WARN]
         pid = (self._search.filter.patient_id or "").strip()
@@ -490,10 +504,15 @@ class PatientSessionController:
         ):
             self._notice = "Chỉ tạo BN mới khi không có hồ sơ trùng"
             return [Effect.WARN]
+        effects: list[Effect] = []
+        if self._phase == Phase.STANDBY:
+            self._phase = Phase.INTAKE
+            effects.append(Effect.POWER_DEVICES_ON)
         self._demo = Demography(patient_id=pid)
         self._search = SearchView()
         self._refresh_phase_after_demo()
-        return [Effect.CLOSE_SEARCH_GRID]
+        effects.append(Effect.CLOSE_SEARCH_GRID)
+        return effects
 
     def _on_close_search(self) -> list[Effect]:
         if not self._search.open:
@@ -514,23 +533,22 @@ class PatientSessionController:
                 return self._on_close_search()
             if intent == "confirm_new_patient":
                 return self._on_confirm_new_patient()
-            # pattern demography into search filter (name / year / gender) — never invent patient_id from loose speech
-            filt = self._search.filter
-            updated = False
-            name = _extract_name(lower)
-            if name:
-                filt = replace(filt, full_name=name)
-                updated = True
-            year = _extract_birth_year(lower)
-            if year is not None:
-                filt = replace(filt, birth_year=str(year))
-                updated = True
-            gender = _extract_gender(lower)
-            if gender:
-                filt = replace(filt, gender=gender)
-                updated = True
-            if updated:
-                return self._on_search_filter(filt)
+            # Keyword-gated demography into search filter — never invent patient_id from loose speech
+            single = _try_single_field(lower)
+            if single:
+                filt = self._search.filter
+                updated = False
+                if single.get("full_name"):
+                    filt = replace(filt, full_name=single["full_name"])
+                    updated = True
+                if single.get("birth_year"):
+                    filt = replace(filt, birth_year=str(single["birth_year"]))
+                    updated = True
+                if single.get("gender"):
+                    filt = replace(filt, gender=single["gender"])
+                    updated = True
+                if updated:
+                    return self._on_search_filter(filt)
             return []
 
         if self._phase == Phase.STANDBY:
@@ -596,7 +614,7 @@ class PatientSessionController:
 
 
 def _extract_name(lower: str) -> Optional[str]:
-    for prefix in ("họ và tên ", "họ tên ", "tên "):
+    for prefix in ("họ và tên ", "họ tên ", "tên là "):
         if prefix in lower:
             return lower.split(prefix, 1)[1].strip().title() or None
     return None

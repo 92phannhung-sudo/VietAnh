@@ -19,6 +19,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeyEvent
 
 from src.patient_search_service import PatientSearchService
+from src.ui_gender_combo import make_gender_combo, set_gender_combo, gender_combo_value
 
 
 class PatientCard(QFrame):
@@ -102,7 +103,7 @@ class PatientGridDialog(QDialog):
         if initial_birth_year:
             self.filter_birth.setText(initial_birth_year)
         if initial_gender:
-            self.filter_gender.setText(initial_gender)
+            set_gender_combo(self.filter_gender, initial_gender, filter_mode=True)
         if mode == "recent" and not any(
             [initial_patient_id, initial_full_name, initial_birth_year, initial_gender]
         ):
@@ -126,18 +127,12 @@ class PatientGridDialog(QDialog):
         self.filter_name.setPlaceholderText("Họ và tên")
         self.filter_birth = QLineEdit()
         self.filter_birth.setPlaceholderText("Năm sinh")
-        self.filter_gender = QLineEdit()
-        self.filter_gender.setPlaceholderText("Giới tính")
+        self.filter_gender = make_gender_combo(filter_mode=True)
 
         self.btn_search = QPushButton("🔍 Tìm kiếm")
         self.btn_search.clicked.connect(self.perform_search)
 
-        for w in (
-            self.filter_id,
-            self.filter_name,
-            self.filter_birth,
-            self.filter_gender,
-        ):
+        for w in (self.filter_id, self.filter_name, self.filter_birth):
             w.returnPressed.connect(self.perform_search)
 
         filter_bar.addWidget(self.filter_id)
@@ -173,7 +168,7 @@ class PatientGridDialog(QDialog):
             "patient_id": self.filter_id.text().strip(),
             "full_name": self.filter_name.text().strip(),
             "birth_year": self.filter_birth.text().strip(),
-            "gender": self.filter_gender.text().strip(),
+            "gender": gender_combo_value(self.filter_gender, filter_mode=True),
         }
 
     def apply_external_filters(self, **kwargs) -> None:
@@ -187,7 +182,7 @@ class PatientGridDialog(QDialog):
             if "birth_year" in kwargs and kwargs["birth_year"] is not None:
                 self.filter_birth.setText(str(kwargs["birth_year"]))
             if "gender" in kwargs and kwargs["gender"] is not None:
-                self.filter_gender.setText(str(kwargs["gender"]))
+                set_gender_combo(self.filter_gender, str(kwargs["gender"]), filter_mode=True)
             self.perform_search()
         finally:
             self._suppress_filter_signal = False

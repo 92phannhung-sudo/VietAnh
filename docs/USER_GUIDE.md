@@ -34,10 +34,10 @@ python main.py
 1. **F1 — Mở phiên:** bật camera / mic / pedal (thoát Standby).  
 2. **Nhập hồ sơ** (một trong các cách):  
    * Quét barcode → mở **lưới tìm hồ sơ** (không tự ghi form). Chọn dòng hoặc confirm BN mới.  
-   * **F5** → lưới hồ sơ gần đây / lọc theo mã–tên–năm sinh–giới tính.  
+   * **F5** → **Tab 2 Thư Mục** (cả khi Standby — tìm hồ sơ cũ không cần F1 trước). Chọn thư mục → «Mở ở Tab Chụp» sẽ tự mở phiên + nạp hồ sơ.  
    * Gõ tay 4 field: Mã BN, Họ tên, Năm sinh, Giới tính.  
-   * Nói pattern demography (họ tên / năm sinh / giới tính) — **giọng không ghi Mã BN**.  
-   * Năm sinh: nếu ASR thiếu số cuối (vd. nghe *"một chín chín"*), hệ thống **chờ** bạn nói thêm chữ số cuối (*"chín"* → 1999) — **không** tự điền 1990.  
+   * **Giọng (chung Tab 1 + Tab 2):** chỉ khi nói đúng từ khóa mới điền ô — `họ và tên…` / `năm sinh…` / `giới tính…` (hoặc từ khóa rồi nói giá trị). Hết chờ ~3 giây / không từ khóa → bỏ qua. **Giọng không ghi Mã BN**.  
+   * Năm sinh: nếu ASR thiếu số cuối sau từ khóa (vd. *"năm sinh một chín chín"*), hệ thống **chờ** chữ số cuối (*"chín"* → 1999) — **không** tự điền 1990.  
 3. Đủ 4 field → Ready. **F2 · Bắt đầu chụp** khóa hồ sơ (Locked Capture).  
 4. **Chụp ảnh** (chỉ khi Locked):  
    * Bàn đạp chân = **chỉ chụp** (không xóa / không đổi BN).  
@@ -48,13 +48,12 @@ python main.py
 8. **Camera lỗi** khi đang phiên: khung giữa hiện panel đỏ lỗi phần cứng (USB / quyền Camera trên macOS / chọn lại camera Tab Cài đặt) — **không** hiện chữ “chế độ chờ / bấm F1” khi phiên vẫn đang mở.  
 9. Ô Mã BN trống khi chưa nhập — **không** được hiện chữ `None` (đó là lỗi cũ đã vá).
 
-### [ Tab 2 ] Thư mục bệnh án (xem / duyệt)
+### [ Tab 2 ] Thư mục bệnh án (xem / duyệt / tìm thay F5 popup)
 
-* Tìm theo Mã BA hoặc Họ tên để **lọc thư mục** (không thay F5 tìm hồ sơ phiên).  
-* Mở thư mục BN → xem ảnh; **xóa từng ảnh** có hộp thoại xác nhận.  
-* **Mở ở Tab Chụp:** chỉ khi đang có phiên và cùng BN (hoặc form trống); BN khác bị chặn — cần F4 rồi F1.  
+* **F5 / mở Tab 2:** 4 ô lọc (Mã / Họ tên / Năm sinh / Giới tính). Giọng dùng **cùng pattern từ khóa** như Tab 1.  
+* Chọn thư mục BN → xem ảnh; **xóa từng ảnh** có hộp thoại xác nhận.  
+* **Mở ở Tab Chụp:** Standby cũng được — tự mở phiên + nạp hồ sơ; BN khác khi đang khám bị chặn.  
 * **Không xuất PDF** trong v1.
-
 ### [ Tab 3 ] Quản Lý Nhân Viên & Nhật Ký Kiểm Toán (Audit Logs)
 * **Chọn Ca Làm Việc:** Chọn nhân viên trực tiếp thao tác hiện tại.
 * **Danh Mục Nhân Viên:** Khai báo danh sách Bác sĩ, Kỹ thuật viên, Điều dưỡng.
@@ -74,7 +73,7 @@ python main.py
 | F1 | Mở / đóng phiên (Standby ↔ Intake) |
 | F2 | Bắt đầu chụp (khóa hồ sơ) khi Ready |
 | F4 | Kết thúc phiên → Standby |
-| F5 | Mở lưới tìm hồ sơ (Intake/Ready) |
+| F5 | Mở Tab 2 Thư mục (Intake/Ready; không popup) |
 | Space | Chụp (Locked) |
 | Delete | Xóa ảnh gần nhất (Locked) |
 

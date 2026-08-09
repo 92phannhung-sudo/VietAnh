@@ -203,6 +203,16 @@ def create_patient(patient_id, name="", birth_year=None, gender=""):
         if conn:
             conn.close()
 
+
+def upsert_patient(patient_id, name="", birth_year=None, gender=""):
+    """Ensure patients row exists before photos FK insert (needed at F2 lock, not only F4)."""
+    patient_id = (patient_id or "").strip()
+    if not patient_id:
+        return False
+    if get_patient(patient_id):
+        return update_patient(patient_id, name or "", birth_year, gender or "")
+    return create_patient(patient_id, name=name or "", birth_year=birth_year, gender=gender or "")
+
 def update_patient(patient_id, name, birth_year, gender):
     conn = None
     try:

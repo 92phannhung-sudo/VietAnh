@@ -69,6 +69,13 @@ class TestPatientSearch(unittest.TestCase):
             [r["patient_id"] for r in recent],
             ["BN456", "BN123", "BN001X"],
         )
+        self.assertEqual(recent[0]["created_at_display"], "04/01/2024 10:00")
+
+    def test_search_includes_created_at(self):
+        service = PatientSearchService(db_path=self.db_file)
+        res = service.search(patient_id="BN123")
+        self.assertEqual(res[0]["created_at"], "2024-01-03 10:00:00")
+        self.assertEqual(res[0]["created_at_display"], "03/01/2024 10:00")
 
     def test_production_schema_id_name(self):
         """Production DB uses id/name columns — service must still return patient_id/full_name keys."""

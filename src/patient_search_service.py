@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import unicodedata
+from datetime import datetime
 from typing import Dict, List, Tuple
 
 
@@ -13,6 +14,29 @@ def remove_accents(input_str: str) -> str:
         return ""
     nfkd_form = unicodedata.normalize("NFD", input_str)
     return "".join([c for c in nfkd_form if not unicodedata.combining(c)]).lower()
+
+
+def format_patient_created_at(raw: str | None) -> str:
+    """Display created_at as dd/mm/yyyy HH:mm (Vietnamese clinical UI)."""
+    if raw is None or not str(raw).strip():
+        return "—"
+    s = str(raw).strip().replace("T", " ")
+    if "." in s:
+        s = s.split(".", 1)[0]
+    try:
+        dt = datetime.fromisoformat(s)
+        return dt.strftime("%d/%m/%Y %H:%M")
+    except ValueError:
+        pass
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            dt = datetime.strptime(s, fmt)
+            if "%H" in fmt:
+                return dt.strftime("%d/%m/%Y %H:%M")
+            return dt.strftime("%d/%m/%Y")
+        except ValueError:
+            continue
+    return s
 
 
 class PatientSearchService:
@@ -32,11 +56,16 @@ class PatientSearchService:
 
     def _row_to_dict(self, row: tuple) -> Dict[str, str]:
         p_id, p_name, p_year, p_gender = row[0], row[1], row[2], row[3]
+        created_raw = row[4] if len(row) > 4 else None
         return {
             "patient_id": "" if p_id is None else str(p_id),
             "full_name": "" if p_name is None else str(p_name),
             "birth_year": "" if p_year is None else str(p_year),
             "gender": "" if p_gender is None else str(p_gender),
+            "created_at": "" if created_raw is None else str(created_raw),
+            "created_at_display": format_patient_created_at(
+                "" if created_raw is None else str(created_raw)
+            ),
         }
 
     def search_exact_id(self, patient_id: str) -> List[Dict[str, str]]:
@@ -52,7 +81,7 @@ class PatientSearchService:
         with sqlite3.connect(self.db_path) as conn:
             id_c, name_c, by_c, gen_c, created_c = self._column_map(conn)
             query = (
-                f"SELECT {id_c}, {name_c}, {by_c}, {gen_c} FROM patients "
+                f"SELECT {id_c}, {name_c}, {by_c}, {gen_c}, {created_c} FROM patients "
                 f"ORDER BY {created_c} DESC LIMIT ?"
             )
             rows = conn.execute(query, (limit,)).fetchall()
@@ -72,8 +101,11 @@ class PatientSearchService:
         - birth_year / gender: exact when provided
         """
         with sqlite3.connect(self.db_path) as conn:
-            id_c, name_c, by_c, gen_c, _created = self._column_map(conn)
-            query = f"SELECT {id_c}, {name_c}, {by_c}, {gen_c} FROM patients WHERE 1=1"
+            id_c, name_c, by_c, gen_c, created_c = self._column_map(conn)
+            query = (
+                f"SELECT {id_c}, {name_c}, {by_c}, {gen_c}, {created_c} "
+                f"FROM patients WHERE 1=1"
+            )
             params: list = []
 
             if patient_id:
@@ -99,4 +131,8 @@ class PatientSearchService:
                 continue
             results.append(item)
 
+        results.sort(
+            key=lambda r: r.get("created_at") or "",
+            reverse=True,
+        )
         return results

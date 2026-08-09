@@ -36,6 +36,13 @@ import voice_detector
 from src.patient_search_service import PatientSearchService
 from src.multimodal_dispatcher import MultiModalDispatcher, ActionType
 from src.ui_clinical_cockpit import ClinicalCockpitWidget
+from src.ui_patient_detail_dialog import PatientDetailDialog
+from src.ui_patient_folder_card import PatientFolderCard
+from src.ui_gender_combo import (
+    make_gender_combo,
+    set_gender_combo,
+    gender_combo_value,
+)
 from src.patient_session_controller import (
     PatientSessionController,
     Hotkey,
@@ -527,13 +534,32 @@ class CameraThread(QThread):
             cv2.imwrite(str(full_path), frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
             
             relative_path = f"photos/{self._active_patient_id}/{filename}"
-            database.add_photo(
+            ok = database.add_photo(
                 patient_id=self._active_patient_id, 
                 relative_path=relative_path,
                 operator_id=self._active_operator_id,
                 operator_name=self._active_operator_name
             )
-            
+            if not ok:
+                # BN mới nhập giọng/tay có thể chưa có row — stub + retry once
+                database.create_patient(self._active_patient_id)
+                ok = database.add_photo(
+                    patient_id=self._active_patient_id,
+                    relative_path=relative_path,
+                    operator_id=self._active_operator_id,
+                    operator_name=self._active_operator_name,
+                )
+            if not ok:
+                logger.error(
+                    "[CAPTURE_ERROR] JPEG saved but DB insert failed for %s (%s)",
+                    self._active_patient_id,
+                    relative_path,
+                )
+                self.error_signal.emit(
+                    f"Ảnh đã ghi đĩa nhưng không lưu được CSDL (BN {self._active_patient_id})."
+                )
+                return
+
             latency_ms = (time.time() - trigger_timestamp) * 1000.0
             logger.info(f"[PHOTO_CAPTURE] Trigger: {self._capture_source} | Op: {self._active_operator_name} | Patient: {self._active_patient_id} | Saved in {latency_ms:.1f}ms")
             
@@ -665,7 +691,7 @@ class MainWindow(QMainWindow):
         self.txt_patient_id = QLineEdit()
         self.txt_patient_name = QLineEdit()
         self.txt_birth_year = QLineEdit()
-        self.txt_gender = QComboBox()
+        self.txt_gender = make_gender_combo()
         self.voice_gauge = QProgressBar()
         self.lbl_voice_status = QLabel("")
         self.lbl_pedal_info = QLabel("")
@@ -823,8 +849,10 @@ class MainWindow(QMainWindow):
             lambda t: self._dispatch_session(UiFieldEdit(Field.FULL_NAME, t.strip() or None))
         )
         self.cockpit_widget.input_birth.textEdited.connect(self._on_cockpit_birth_edited)
-        self.cockpit_widget.input_gender.textEdited.connect(
-            lambda t: self._dispatch_session(UiFieldEdit(Field.GENDER, t.strip() or None))
+        self.cockpit_widget.input_gender.currentTextChanged.connect(
+            lambda t: self._dispatch_session(
+                UiFieldEdit(Field.GENDER, t.strip() if t in ("Nam", "Nữ") else None)
+            )
         )
         
         # Keep references for camera frame & voice/pedal status updates
@@ -875,8 +903,19 @@ class MainWindow(QMainWindow):
             btn.setProperty("active", is_active)
             btn.style().unpolish(btn)
             btn.style().polish(btn)
-            
+
+        if index == 0:
+            # Tab Chụp: đóng chế độ tìm để giọng điền hồ sơ, không lọc Tab 2
+            snap = self.session_ctrl.snapshot()
+            if snap.search.open:
+                self._dispatch_session(CloseSearch())
+
         if index == 1:
+            snap = self.session_ctrl.snapshot()
+            # Entering Tab 2 while search allowed → arm voice/filter search mode
+            if snap.affordances.can_open_search and not snap.search.open:
+                self._dispatch_session(Hotkey("F5"))
+                return
             self.load_history_records()
         elif index == 2:
             self.load_staff_and_audit_data()
@@ -930,12 +969,17 @@ class MainWindow(QMainWindow):
                 self.txt_birth_year.setText(
                     "" if demo.birth_year is None else str(demo.birth_year)
                 )
+            if hasattr(self, "txt_gender"):
+                set_gender_combo(self.txt_gender, demo.gender)
         elif view.phase == Phase.STANDBY:
             self.current_patient_id = None
             if hasattr(self, "camera_thread") and self.camera_thread:
                 self.camera_thread.set_active_patient(None)
         if view.notice and view.phase != Phase.STANDBY:
             self.status_bar.showMessage(view.notice, 4000)
+        # Locked Capture requires a patients row before photo FK inserts (voice/new BN may not exist yet)
+        if view.phase == Phase.LOCKED_CAPTURE and view.demography.patient_id:
+            self._upsert_demography_patient(view.demography)
         # §12.6 pill visible across tabs while Locked
         if hasattr(self, "lbl_capture_pill"):
             if view.phase == Phase.LOCKED_CAPTURE and view.demography.patient_id:
@@ -961,7 +1005,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "camera_thread") and self.camera_thread:
             self.camera_thread.resume_barcode_scanning()
         self.status_bar.showMessage(
-            "🚀 [F1]: Phiên đã mở. Quét mã / nhập hồ sơ / F5 tìm kiếm.", 5000
+            "🚀 [F1]: Phiên đã mở. Quét mã / nhập hồ sơ / F5 → Tab Thư mục.", 5000
         )
         logger.info("[SESSION] Devices powered ON")
 
@@ -971,59 +1015,165 @@ class MainWindow(QMainWindow):
         logger.info("[SESSION] Devices powered OFF")
 
     def _session_open_search(self, view):
-        from src.ui_patient_grid import PatientGridDialog
-        from src.patient_session_controller import SearchMode
-
-        filt = view.search.filter
-        mode = "recent"
-        if view.search.mode == SearchMode.FILTERED:
-            mode = "filtered"
-        elif view.search.mode == SearchMode.EMPTY_NEW_PATIENT_PROMPT:
-            mode = "filtered"
-
-        if self._search_dialog is not None:
-            try:
-                self._search_dialog.apply_external_filters(
-                    patient_id=filt.patient_id or "",
-                    full_name=filt.full_name or "",
-                    birth_year=filt.birth_year or "",
-                    gender=filt.gender or "",
-                )
-                self._search_dialog.raise_()
-                self._search_dialog.activateWindow()
-                return
-            except Exception:
-                self._search_dialog = None
-
-        dialog = PatientGridDialog(
-            search_service=self.search_service,
-            parent=self,
-            mode=mode,
-            initial_patient_id=filt.patient_id or "",
-            initial_full_name=filt.full_name or "",
-            initial_birth_year=filt.birth_year or "",
-            initial_gender=filt.gender or "",
+        """F5 / barcode / Tab2 → 4-field folder browse (no popup)."""
+        self._session_close_search()
+        if self.stack.currentIndex() != 1:
+            # Avoid re-entrant Hotkey F5 from switch_tab
+            self.stack.setCurrentIndex(1)
+            for idx, btn in enumerate(self.nav_btns):
+                is_active = "true" if idx == 1 else "false"
+                btn.setProperty("active", is_active)
+                btn.style().unpolish(btn)
+                btn.style().polish(btn)
+        if hasattr(self, "tab2_stack"):
+            self.tab2_stack.setCurrentIndex(0)
+        self._apply_search_view_to_tab2(view)
+        focus = None
+        if view.search.filter.patient_id and hasattr(self, "filter_id"):
+            focus = self.filter_id
+        elif hasattr(self, "filter_name"):
+            focus = self.filter_name
+        if focus is not None:
+            focus.setFocus()
+            focus.selectAll()
+        logger.info(
+            "[SESSION] OPEN_SEARCH → Tab2 mode=%s id=%s",
+            getattr(view.search.mode, "value", view.search.mode),
+            view.search.filter.patient_id,
         )
-        dialog.patient_selected.connect(self.on_patient_selected_from_grid)
-        dialog.new_patient_id_confirmed.connect(self._on_new_patient_id_confirmed)
-        dialog.filters_changed.connect(self._on_search_filters_changed)
-        self._search_dialog = dialog
-        dialog.finished.connect(lambda _r: self._on_search_dialog_finished())
-        dialog.open()  # non-blocking so barcode can refresh while open
-        logger.info("[SESSION] OPEN_SEARCH mode=%s id=%s", mode, filt.patient_id)
 
-    def _session_refresh_search(self, view):
-        if self._search_dialog is None:
-            self._session_open_search(view)
+    def _apply_search_view_to_tab2(self, view):
+        """Map session SearchFilterEdit onto Tab 2's four filter boxes."""
+        if not hasattr(self, "filter_id"):
             return
         filt = view.search.filter
-        self._search_dialog.apply_external_filters(
-            patient_id=filt.patient_id or "",
-            full_name=filt.full_name or "",
-            birth_year=filt.birth_year or "",
-            gender=filt.gender or "",
+        self._tab2_filter_suppress = True
+        try:
+            self.filter_id.setText(filt.patient_id or "")
+            self.filter_name.setText(filt.full_name or "")
+            self.filter_birth.setText(
+                "" if filt.birth_year in (None, "") else str(filt.birth_year)
+            )
+            set_gender_combo(self.filter_gender, filt.gender or "", filter_mode=True)
+        finally:
+            self._tab2_filter_suppress = False
+        self.load_history_records()
+        self.status_bar.showMessage(
+            "📁 Đang tìm hồ sơ — 4 ô lọc + giọng «họ và tên / năm sinh / giới tính». "
+            "Chọn thư mục → «Mở ở Tab Chụp».",
+            5000,
         )
-        logger.info("[SESSION] REFRESH_SEARCH filter=%s", filt)
+
+    def _session_refresh_search(self, view):
+        if self.stack.currentIndex() != 1:
+            self.stack.setCurrentIndex(1)
+            for idx, btn in enumerate(self.nav_btns):
+                is_active = "true" if idx == 1 else "false"
+                btn.setProperty("active", is_active)
+                btn.style().unpolish(btn)
+                btn.style().polish(btn)
+        if hasattr(self, "tab2_stack"):
+            self.tab2_stack.setCurrentIndex(0)
+        self._apply_search_view_to_tab2(view)
+        logger.info("[SESSION] REFRESH_SEARCH → Tab2 filter=%s", view.search.filter)
+
+    def _tab2_current_filters(self) -> dict:
+        return {
+            "patient_id": self.filter_id.text().strip() if hasattr(self, "filter_id") else "",
+            "full_name": self.filter_name.text().strip() if hasattr(self, "filter_name") else "",
+            "birth_year": self.filter_birth.text().strip() if hasattr(self, "filter_birth") else "",
+            "gender": gender_combo_value(self.filter_gender, filter_mode=True)
+            if hasattr(self, "filter_gender")
+            else "",
+        }
+
+    def _tab2_search_result_count(self, filters: dict | None = None) -> int:
+        filters = filters or self._tab2_current_filters()
+        return len(
+            self.search_service.search(
+                filters["patient_id"],
+                filters["full_name"],
+                filters["birth_year"],
+                filters["gender"],
+            )
+        )
+
+    def _merge_voice_into_tab2_filters(self, patient_data: dict) -> dict:
+        """Apply voice partial dict onto Tab 2 boxes; return merged filter dict."""
+        current = self._tab2_current_filters()
+        if patient_data.get("full_name"):
+            current["full_name"] = str(patient_data["full_name"]).strip()
+        if patient_data.get("birth_year"):
+            current["birth_year"] = str(patient_data["birth_year"]).strip()
+        if patient_data.get("gender"):
+            current["gender"] = str(patient_data["gender"]).strip()
+        if not hasattr(self, "filter_id"):
+            return current
+        self._tab2_filter_suppress = True
+        try:
+            self.filter_name.setText(current["full_name"])
+            self.filter_birth.setText(current["birth_year"])
+            set_gender_combo(self.filter_gender, current["gender"], filter_mode=True)
+        finally:
+            self._tab2_filter_suppress = False
+        return current
+
+    def _sync_tab2_filters_to_session(self) -> bool:
+        """Push Tab 2 filter boxes into session when search mode is active."""
+        snap = self.session_ctrl.snapshot()
+        if not snap.search.open:
+            return False
+        filters = self._tab2_current_filters()
+        self._dispatch_session(
+            SearchFilterEdit(
+                patient_id=filters["patient_id"] or None,
+                full_name=filters["full_name"] or None,
+                birth_year=filters["birth_year"] or None,
+                gender=filters["gender"] or None,
+                result_count=self._tab2_search_result_count(filters),
+            )
+        )
+        return True
+
+    def _on_tab2_filter_edited(self, _text: str = ""):
+        """Typing updates results; keep session search.filter in sync for voice."""
+        if getattr(self, "_tab2_filter_suppress", False):
+            return
+        if not self._sync_tab2_filters_to_session():
+            self.load_history_records()
+
+    def _on_tab2_filters_changed(self):
+        if getattr(self, "_tab2_filter_suppress", False):
+            return
+        snap = self.session_ctrl.snapshot()
+        if not snap.search.open and snap.affordances.can_open_search:
+            self._dispatch_session(Hotkey("F5"))
+        if not self._sync_tab2_filters_to_session():
+            self.load_history_records()
+
+    def _update_tab2_empty_prompt(self, rows: list, filters: dict, has_filter: bool) -> None:
+        if not hasattr(self, "lbl_tab2_empty"):
+            return
+        pid = filters.get("patient_id", "")
+        if has_filter and not rows and pid:
+            self.lbl_tab2_empty.setText(
+                f"Chưa có hồ sơ [{pid}]. Dùng mã này cho bệnh nhân mới?"
+            )
+            self.lbl_tab2_empty.show()
+            self.btn_tab2_confirm_new.show()
+        else:
+            self.lbl_tab2_empty.hide()
+            self.btn_tab2_confirm_new.hide()
+
+    def _on_tab2_confirm_new_patient(self):
+        pid = self.filter_id.text().strip()
+        if not pid:
+            return
+        snap = self.session_ctrl.snapshot()
+        if not snap.search.open and snap.affordances.can_open_search:
+            self._dispatch_session(Hotkey("F5"))
+        self._on_new_patient_id_confirmed(pid)
+        self.switch_tab(0)
 
     def _session_close_search(self):
         if self._search_dialog is not None:
@@ -1072,25 +1222,25 @@ class MainWindow(QMainWindow):
         self.load_patient_photos()
         logger.info("[SESSION] ConfirmNewPatientId %s", pid)
 
+    def _upsert_demography_patient(self, demo) -> bool:
+        """Write demography to patients table so photo FK inserts succeed during Locked Capture."""
+        if not demo or not demo.patient_id:
+            return False
+        ok = database.upsert_patient(
+            demo.patient_id,
+            name=demo.full_name or "",
+            birth_year=demo.birth_year,
+            gender=demo.gender or "",
+        )
+        if ok:
+            logger.info("[SESSION] Upserted patient %s before/during capture", demo.patient_id)
+        return ok
+
     def _session_persist_and_clear(self):
         demo = getattr(self, "_pending_persist_demo", None)
         self._pending_persist_demo = None
         if demo and demo.patient_id:
-            existing = database.get_patient(demo.patient_id)
-            if existing:
-                database.update_patient(
-                    demo.patient_id,
-                    demo.full_name or "",
-                    demo.birth_year,
-                    demo.gender or "",
-                )
-            else:
-                database.create_patient(
-                    demo.patient_id,
-                    name=demo.full_name or "",
-                    birth_year=demo.birth_year,
-                    gender=demo.gender or "",
-                )
+            self._upsert_demography_patient(demo)
             logger.info("[SESSION] Persisted patient %s", demo.patient_id)
         if hasattr(self, "cockpit_widget") and self.cockpit_widget:
             # Clear filmstrip widgets; demography already cleared via bind
@@ -1216,8 +1366,7 @@ class MainWindow(QMainWindow):
         self.txt_birth_year = QLineEdit()
         info_form.addRow("Năm sinh:", self.txt_birth_year)
         
-        self.txt_gender = QComboBox()
-        self.txt_gender.addItems(["Nam", "Nữ", "Khác"])
+        self.txt_gender = make_gender_combo()
         info_form.addRow("Giới tính:", self.txt_gender)
         
         btn_save = QPushButton("Lưu thay đổi")
@@ -1282,85 +1431,140 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(15, 15, 15, 15)
         layout.setSpacing(10)
 
-        # Top Control Bar (Search + Breadcrumb + Action Buttons)
+        # Top Control Bar (Breadcrumb + Action Buttons)
         top_bar = QHBoxLayout()
-        
+
         self.lbl_breadcrumb = QLabel("📁 Tất cả Thư mục Bệnh án")
         self.lbl_breadcrumb.setStyleSheet("font-weight: bold; font-size: 15px; color: #38bdf8;")
         top_bar.addWidget(self.lbl_breadcrumb)
-        
-        top_bar.addSpacing(15)
 
-        # Search box (Fuzzy Search by ID, Name, or QR)
-        self.txt_search = QLineEdit()
-        self.txt_search.setPlaceholderText("🔍 Tìm gần đúng theo Mã BA, Tên hoặc quét Mã QR (Ctrl+F)...")
-        self.txt_search.setClearButtonEnabled(True)
-        self.txt_search.textChanged.connect(self.load_history_records)
-        top_bar.addWidget(self.txt_search, stretch=1)
-        
-        top_bar.addSpacing(10)
+        top_bar.addStretch(1)
 
         self.btn_back_folder = QPushButton("◀️ Quay lại Thư mục (Backspace)")
-        self.btn_back_folder.setStyleSheet("background-color: #334155; color: white; padding: 6px 12px; font-weight: bold; border-radius: 4px;")
+        self.btn_back_folder.setStyleSheet(
+            "background-color: #334155; color: white; padding: 6px 12px; font-weight: bold; border-radius: 4px;"
+        )
         self.btn_back_folder.setCursor(Qt.PointingHandCursor)
         self.btn_back_folder.clicked.connect(self.show_level1_folders)
         self.btn_back_folder.setVisible(False)
         top_bar.addWidget(self.btn_back_folder)
 
         self.btn_open_tab1 = QPushButton("📷 Mở ở Tab Chụp")
-        self.btn_open_tab1.setStyleSheet("background-color: #0284c7; color: white; padding: 6px 12px; font-weight: bold; border-radius: 4px;")
+        self.btn_open_tab1.setStyleSheet(
+            "background-color: #0284c7; color: white; padding: 6px 12px; font-weight: bold; border-radius: 4px;"
+        )
         self.btn_open_tab1.setCursor(Qt.PointingHandCursor)
         self.btn_open_tab1.clicked.connect(self.open_selected_folder_in_tab1)
         self.btn_open_tab1.setVisible(False)
         top_bar.addWidget(self.btn_open_tab1)
 
-        # PDF export removed (v1 out of scope — SPEC hands-free)
         self.btn_export_report = None
-        
         layout.addLayout(top_bar)
+
+        # 4-field filter (same shape as former F5 popup) + voice fills these when search.open
+        filter_bar = QHBoxLayout()
+        filter_bar.setSpacing(8)
+        self.filter_id = QLineEdit()
+        self.filter_id.setPlaceholderText("Mã hồ sơ/phiếu (khớp đúng)")
+        self.filter_name = QLineEdit()
+        self.filter_name.setPlaceholderText("Họ và tên")
+        self.filter_birth = QLineEdit()
+        self.filter_birth.setPlaceholderText("Năm sinh")
+        self.filter_gender = make_gender_combo(filter_mode=True)
+        self.btn_tab2_search = QPushButton("🔍 Tìm")
+        self.btn_tab2_search.setCursor(Qt.PointingHandCursor)
+        self.btn_tab2_search.setStyleSheet(
+            "background-color: #0284c7; color: white; font-weight: bold; padding: 6px 14px; border-radius: 4px;"
+        )
+        self.btn_tab2_search.clicked.connect(self._on_tab2_filters_changed)
+
+        # Legacy alias: barcode Tab2 path still sets txt_search
+        self.txt_search = self.filter_id
+
+        for w in (self.filter_id, self.filter_name, self.filter_birth):
+            w.setClearButtonEnabled(True)
+            w.returnPressed.connect(self._on_tab2_filters_changed)
+            w.textEdited.connect(self._on_tab2_filter_edited)
+            filter_bar.addWidget(w, stretch=1 if w is self.filter_name else 0)
+        self.filter_gender.currentIndexChanged.connect(
+            lambda _idx: self._on_tab2_filter_edited()
+        )
+        filter_bar.addWidget(self.filter_gender)
+        filter_bar.addWidget(self.btn_tab2_search)
+        layout.addLayout(filter_bar)
+
+        self.lbl_tab2_filter_hint = QLabel(
+            "🎙️ Hai bước: «họ và tên» → nói tên trong ~3 giây (vd: Lương Thế Vinh); "
+            "hết chờ → nói từ khóa mới. Tương tự «năm sinh» / «giới tính»."
+        )
+        self.lbl_tab2_filter_hint.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        self.lbl_tab2_filter_hint.setWordWrap(True)
+        layout.addWidget(self.lbl_tab2_filter_hint)
+
+        empty_row = QHBoxLayout()
+        self.lbl_tab2_empty = QLabel("")
+        self.lbl_tab2_empty.setStyleSheet("color: #fbbf24; font-size: 12px;")
+        self.lbl_tab2_empty.setWordWrap(True)
+        self.lbl_tab2_empty.hide()
+        self.btn_tab2_confirm_new = QPushButton("Dùng mã này cho bệnh nhân mới")
+        self.btn_tab2_confirm_new.setStyleSheet(
+            "background-color: #16a34a; color: white; font-weight: bold; "
+            "padding: 6px 14px; border-radius: 4px;"
+        )
+        self.btn_tab2_confirm_new.setCursor(Qt.PointingHandCursor)
+        self.btn_tab2_confirm_new.clicked.connect(self._on_tab2_confirm_new_patient)
+        self.btn_tab2_confirm_new.hide()
+        empty_row.addWidget(self.lbl_tab2_empty, stretch=1)
+        empty_row.addWidget(self.btn_tab2_confirm_new)
+        layout.addLayout(empty_row)
 
         # Stacked Container for Level 1 vs Level 2
         self.tab2_stack = QStackedWidget()
-        
+
         # --- LEVEL 1 PAGE: VISUAL FOLDER CARDS GRID ---
         self.level1_widget = QWidget()
         level1_layout = QVBoxLayout(self.level1_widget)
         level1_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         self.level1_scroll = QScrollArea()
         self.level1_scroll.setWidgetResizable(True)
-        self.level1_scroll.setStyleSheet("QScrollArea { border: 1px solid #1e293b; background-color: #090d16; border-radius: 6px; }")
-        
+        self.level1_scroll.setStyleSheet(
+            "QScrollArea { border: 1px solid #1e293b; background-color: #090d16; border-radius: 6px; }"
+        )
+
         self.level1_container = QWidget()
         self.level1_grid = QGridLayout(self.level1_container)
         self.level1_grid.setContentsMargins(15, 15, 15, 15)
         self.level1_grid.setSpacing(15)
         self.level1_scroll.setWidget(self.level1_container)
         level1_layout.addWidget(self.level1_scroll)
-        
+
         self.tab2_stack.addWidget(self.level1_widget)
 
         # --- LEVEL 2 PAGE: DETAILED PATIENT PHOTO GALLERY ---
         self.level2_widget = QWidget()
         level2_layout = QVBoxLayout(self.level2_widget)
         level2_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         self.level2_scroll = QScrollArea()
         self.level2_scroll.setWidgetResizable(True)
-        self.level2_scroll.setStyleSheet("QScrollArea { border: 1px solid #1e293b; background-color: #090d16; border-radius: 6px; }")
-        
+        self.level2_scroll.setStyleSheet(
+            "QScrollArea { border: 1px solid #1e293b; background-color: #090d16; border-radius: 6px; }"
+        )
+
         self.level2_container = QWidget()
         self.level2_grid = QGridLayout(self.level2_container)
         self.level2_grid.setContentsMargins(15, 15, 15, 15)
         self.level2_grid.setSpacing(15)
         self.level2_scroll.setWidget(self.level2_container)
         level2_layout.addWidget(self.level2_scroll)
-        
+
         self.tab2_stack.addWidget(self.level2_widget)
 
         layout.addWidget(self.tab2_stack)
-        
+
         self.selected_patient_folder_id = None
+        self._tab2_filter_suppress = False
         return widget
 
     # ----------------- TAB 3: STAFF & AUDIT LOGS & ACTION MAPPINGS -----------------
@@ -1824,22 +2028,31 @@ class MainWindow(QMainWindow):
 
     def open_selected_folder_in_tab1(self):
         patient_id = self.selected_patient_folder_id
+        if patient_id:
+            self._continue_with_patient(patient_id)
+
+    def _view_patient_detail(self, patient_id: str):
+        dlg = PatientDetailDialog(
+            patient_id,
+            parent=self,
+            operator_name=getattr(self, "active_operator_name", ""),
+        )
+        dlg.exec()
+        self.load_history_records()
+
+    def _continue_with_patient(self, patient_id: str):
         if not patient_id:
             return
+        self.selected_patient_folder_id = patient_id
         view = self.session_ctrl.snapshot()
         current = view.demography.patient_id
-        if view.phase == Phase.STANDBY:
-            self.status_bar.showMessage("F1 mở phiên trước khi mở ở Tab Chụp.", 4000)
-            return
         if current and current != patient_id:
             self.status_bar.showMessage(
                 f"Đang khám [{current}] — F4 rồi F1 để đổi BN",
                 5000,
             )
             return
-        # Same patient (or empty demography with id match intent): jump to capture tab only
-        if not current:
-            # Allow loading same-folder BN into intake when session open but empty
+        if not current or view.phase == Phase.STANDBY:
             patient = database.get_patient(patient_id)
             if patient:
                 demo = Demography(
@@ -1849,6 +2062,9 @@ class MainWindow(QMainWindow):
                     gender=patient.get("gender") or None,
                 )
                 self._dispatch_session(LoadRecord(demo))
+                self.load_patient_photos()
+            else:
+                self._dispatch_session(LoadRecord(Demography(patient_id=patient_id)))
                 self.load_patient_photos()
         self.switch_tab(0)
 
@@ -1864,15 +2080,21 @@ class MainWindow(QMainWindow):
             self.open_patient_folder(self.selected_patient_folder_id)
             return
 
-        query = self.txt_search.text().strip().lower()
-        conn = database.get_db_connection()
-        cursor = conn.cursor()
-        if query:
-            cursor.execute("SELECT * FROM patients WHERE LOWER(id) LIKE ? OR LOWER(name) LIKE ? ORDER BY created_at DESC", (f"%{query}%", f"%{query}%"))
+        filters = self._tab2_current_filters()
+        has_filter = any(filters.values())
+        if has_filter:
+            rows = self.search_service.search(
+                filters["patient_id"],
+                filters["full_name"],
+                filters["birth_year"],
+                filters["gender"],
+            )
+            self.lbl_breadcrumb.setText(
+                f"📁 Kết quả lọc ({len(rows)}) — Mã/Tên/Năm sinh/GT"
+            )
         else:
-            cursor.execute("SELECT * FROM patients ORDER BY created_at DESC")
-        rows = cursor.fetchall()
-        conn.close()
+            rows = self.search_service.recent(limit=50)
+            self.lbl_breadcrumb.setText("📁 Thư mục Bệnh án · Gần đây (50)")
 
         # Clear Level 1 Grid
         while self.level1_grid.count():
@@ -1881,18 +2103,28 @@ class MainWindow(QMainWindow):
                 item.widget().deleteLater()
 
         if not rows:
-            empty_lbl = QLabel("Không tìm thấy Thư mục Bệnh án nào khớp với từ khóa.")
+            self._update_tab2_empty_prompt(rows, filters, has_filter)
+            empty_lbl = QLabel(
+                "Không tìm thấy hồ sơ khớp bộ lọc."
+                if has_filter
+                else "Chưa có thư mục Bệnh án nào."
+            )
             empty_lbl.setAlignment(Qt.AlignCenter)
-            empty_lbl.setStyleSheet("color: #64748b; font-size: 14px; font-weight: bold; margin: 40px;")
+            empty_lbl.setStyleSheet(
+                "color: #64748b; font-size: 14px; font-weight: bold; margin: 40px;"
+            )
             self.level1_grid.addWidget(empty_lbl, 0, 0)
             return
 
+        self._update_tab2_empty_prompt(rows, filters, has_filter)
+
         cols = 4
         for idx, p in enumerate(rows):
-            p_id = p["id"]
-            p_name = p["name"] or "Chưa tên"
-            p_year = p["birth_year"] or ""
-            
+            p_id = p.get("patient_id") or p.get("id")
+            p_name = p.get("full_name") or p.get("name") or "Chưa tên"
+            p_year = p.get("birth_year") or ""
+            p_gender = p.get("gender") or ""
+
             photos = database.get_patient_photos(p_id)
             photo_count = len(photos)
             
@@ -1902,53 +2134,22 @@ class MainWindow(QMainWindow):
                 latest_photo_path = database.get_full_photo_path(photos[0]["file_path"])
                 pix = QPixmap(str(latest_photo_path))
                 if not pix.isNull():
-                    cover_pix = pix.scaled(200, 130, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    cover_pix = pix.scaled(208, 96, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
             r = idx // cols
             c = idx % cols
 
-            # Create Folder Card Widget
-            card = QWidget()
-            card.setFixedSize(220, 210)
-            card.setStyleSheet("""
-                QWidget {
-                    background-color: #0f172a;
-                    border: 1px solid #1e293b;
-                    border-radius: 8px;
-                }
-                QWidget:hover {
-                    border: 1.5px solid #38bdf8;
-                    background-color: #1e293b;
-                }
-            """)
-            card_layout = QVBoxLayout(card)
-            card_layout.setContentsMargins(8, 8, 8, 8)
-            card_layout.setSpacing(4)
-
-            # Cover Thumbnail Image
-            lbl_cover = QLabel()
-            lbl_cover.setFixedSize(204, 120)
-            lbl_cover.setAlignment(Qt.AlignCenter)
-            lbl_cover.setStyleSheet("background-color: #020617; border-radius: 4px;")
-            if cover_pix:
-                lbl_cover.setPixmap(cover_pix)
-            else:
-                lbl_cover.setText("📁 Thư mục trống")
-                lbl_cover.setStyleSheet("background-color: #020617; color: #475569; font-weight: bold;")
-            card_layout.addWidget(lbl_cover)
-
-            # Header info
-            lbl_title = QLabel(f"📂 {p_id}")
-            lbl_title.setStyleSheet("font-weight: bold; font-size: 13px; color: #38bdf8;")
-            card_layout.addWidget(lbl_title)
-
-            lbl_sub = QLabel(f"{p_name} ({p_year}) | 🖼️ {photo_count} ảnh")
-            lbl_sub.setStyleSheet("color: #94a3b8; font-size: 11px;")
-            card_layout.addWidget(lbl_sub)
-
-            card.setCursor(Qt.PointingHandCursor)
-            card.mousePressEvent = lambda e, pid=p_id: self.open_patient_folder(pid)
-            
+            card = PatientFolderCard(
+                p_id,
+                name=p_name,
+                birth_year=p_year,
+                gender=p_gender,
+                photo_count=photo_count,
+                created_at_display=p.get("created_at_display") or "—",
+                cover_pixmap=cover_pix,
+            )
+            card.view_detail.connect(self._view_patient_detail)
+            card.continue_work.connect(self._continue_with_patient)
             self.level1_grid.addWidget(card, r, c)
 
     def on_history_item_clicked(self, row, col):
@@ -2263,24 +2464,97 @@ class MainWindow(QMainWindow):
 
     @Slot(dict)
     def handle_voice_patient_info(self, patient_data):
-        """Structured demography from voice thread → UiFieldEdit / search filters only."""
+        """Structured demography from voice thread → Tab 1 intake or Tab 2 filters."""
         if not patient_data:
             return
         snap = self.session_ctrl.snapshot()
-        if snap.phase == Phase.STANDBY:
-            logger.info("[VOICE_PATIENT] Ignored — Standby (F1 first)")
+        patient_data = {
+            k: v
+            for k, v in patient_data.items()
+            if k not in ("patient_id", "_partial") and v not in (None, "")
+        }
+        if not patient_data:
             return
-        # Never write patient_id from voice
-        patient_data = {k: v for k, v in patient_data.items() if k != "patient_id"}
-        if snap.search.open:
+
+        on_tab2 = hasattr(self, "stack") and self.stack.currentIndex() == 1
+        on_tab1 = hasattr(self, "stack") and self.stack.currentIndex() == 0
+        session_open = snap.phase in (Phase.INTAKE, Phase.READY, Phase.CORRECTION)
+
+        # Tab 1 đang mở phiên → ưu tiên điền cockpit (không bị search.open chặn)
+        if on_tab1 and session_open:
+            labels = {"full_name": "Họ tên", "birth_year": "Năm sinh", "gender": "Giới tính"}
+            filled = []
+            if "full_name" in patient_data and Field.FULL_NAME in snap.affordances.editable:
+                self._dispatch_session(UiFieldEdit(Field.FULL_NAME, patient_data["full_name"]))
+                filled.append(labels["full_name"])
+            if "birth_year" in patient_data and Field.BIRTH_YEAR in snap.affordances.editable:
+                try:
+                    year = int(str(patient_data["birth_year"]).strip())
+                except ValueError:
+                    year = None
+                if year is not None:
+                    self._dispatch_session(UiFieldEdit(Field.BIRTH_YEAR, year))
+                    filled.append(labels["birth_year"])
+            if "gender" in patient_data and Field.GENDER in snap.affordances.editable:
+                self._dispatch_session(UiFieldEdit(Field.GENDER, patient_data["gender"]))
+                filled.append(labels["gender"])
+            if filled:
+                self.status_bar.showMessage(
+                    f"🎙️ Đã điền Tab Chụp: {', '.join(filled)}",
+                    4000,
+                )
+            logger.info("[VOICE_INTAKE_FILL] Tab1 %s", patient_data)
+            return
+
+        if on_tab2 or snap.search.open:
+            if not snap.search.open and snap.affordances.can_open_search:
+                self._dispatch_session(Hotkey("F5"))
+                snap = self.session_ctrl.snapshot()
+            if on_tab2 and hasattr(self, "filter_name"):
+                merged = self._merge_voice_into_tab2_filters(patient_data)
+                merged["patient_id"] = (
+                    merged.get("patient_id")
+                    or snap.search.filter.patient_id
+                    or self.filter_id.text().strip()
+                    or ""
+                )
+            else:
+                merged = {
+                    "patient_id": snap.search.filter.patient_id or "",
+                    "full_name": patient_data.get("full_name")
+                    or snap.search.filter.full_name
+                    or "",
+                    "birth_year": patient_data.get("birth_year")
+                    or snap.search.filter.birth_year
+                    or "",
+                    "gender": patient_data.get("gender")
+                    or snap.search.filter.gender
+                    or "",
+                }
             self._dispatch_session(
                 SearchFilterEdit(
-                    patient_id=snap.search.filter.patient_id,
-                    full_name=patient_data.get("full_name") or snap.search.filter.full_name,
-                    birth_year=patient_data.get("birth_year") or snap.search.filter.birth_year,
-                    gender=patient_data.get("gender") or snap.search.filter.gender,
+                    patient_id=merged["patient_id"] or None,
+                    full_name=merged["full_name"] or None,
+                    birth_year=merged["birth_year"] or None,
+                    gender=merged["gender"] or None,
+                    result_count=self._tab2_search_result_count(merged),
                 )
             )
+            labels = {
+                "full_name": "Họ tên",
+                "birth_year": "Năm sinh",
+                "gender": "Giới tính",
+            }
+            filled = [labels[k] for k in labels if k in patient_data]
+            if filled:
+                self.status_bar.showMessage(
+                    f"🎙️ Đã điền lọc Tab 2: {', '.join(filled)}",
+                    4000,
+                )
+            logger.info("[VOICE_FILTER_FILL] Tab2 %s", patient_data)
+            return
+        if snap.phase == Phase.STANDBY:
+            logger.info("[VOICE_PATIENT] Ignored — Standby (F1 hoặc F5 tìm hồ sơ trước)")
             return
         if "full_name" in patient_data and Field.FULL_NAME in snap.affordances.editable:
             self._dispatch_session(UiFieldEdit(Field.FULL_NAME, patient_data["full_name"]))
@@ -2591,10 +2865,7 @@ class MainWindow(QMainWindow):
         if patient:
             self.txt_patient_name.setText(patient.get("name", ""))
             self.txt_birth_year.setText(str(patient.get("birth_year") or ""))
-            gender = patient.get("gender", "Nam")
-            idx = self.txt_gender.findText(gender)
-            if idx >= 0:
-                self.txt_gender.setCurrentIndex(idx)
+            set_gender_combo(self.txt_gender, patient.get("gender", "Nam"))
         else:
             name = self.txt_patient_name.text().strip()
             dob = self.txt_birth_year.text().strip()
@@ -2634,6 +2905,11 @@ class MainWindow(QMainWindow):
         if free_mb < 500:
             QMessageBox.critical(self, "Bộ Nhớ Đầy", f"Dung lượng ổ đĩa còn lại quá thấp ({free_mb:.1f}MB). Vui lòng dọn dẹp ổ đĩa!")
             return
+
+        # Safety: patients FK must exist before CameraThread.add_photo
+        snap = self.session_ctrl.snapshot()
+        if snap.demography.patient_id:
+            self._upsert_demography_patient(snap.demography)
 
         self.lbl_scan_status.setText(f"📸 ĐANG THỰC HIỆN CHỤP ẢNH CHO BN: {self.current_patient_id}...")
         self.lbl_scan_status.setStyleSheet("color: #38bdf8; font-weight: bold; font-size: 14px; padding: 4px; background-color: #0c4a6e; border-radius: 4px;")

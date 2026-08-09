@@ -40,7 +40,23 @@ class TestPatientSessionController(unittest.TestCase):
         self.assertTrue(view.affordances.start_session)
         self.assertFalse(view.affordances.begin_capture)
         self.assertFalse(view.affordances.pedal_capture)
+        self.assertTrue(view.affordances.can_open_search)
         self.assertEqual(view.affordances.voice_mode, "off")
+
+    def test_f5_opens_search_from_standby(self):
+        out = self.ctrl.handle(Hotkey("F5"))
+        self.assertTrue(out.view.search.open)
+        self.assertEqual(out.view.phase, Phase.STANDBY)
+        self.assertIn(Effect.OPEN_SEARCH_GRID, out.effects)
+
+    def test_load_record_from_standby_opens_session(self):
+        out = self.ctrl.handle(
+            LoadRecord(Demography("BN001", "Nguyen Van A", 1985, "Nam"))
+        )
+        self.assertEqual(out.view.phase, Phase.READY)
+        self.assertEqual(out.view.demography.patient_id, "BN001")
+        self.assertIn(Effect.POWER_DEVICES_ON, out.effects)
+        self.assertFalse(out.view.search.open)
 
     def test_f1_opens_intake_and_arms_devices(self):
         out = self.ctrl.handle(Hotkey("F1"))
@@ -189,6 +205,16 @@ class TestPatientSessionController(unittest.TestCase):
         self.assertIsNone(out.view.demography.full_name)
         self.assertFalse(out.view.search.open)
         self.assertEqual(out.view.phase, Phase.INTAKE)
+
+    def test_confirm_new_patient_from_standby_search(self):
+        self.ctrl.handle(Hotkey("F5"))
+        self.ctrl.handle(
+            SearchFilterEdit(patient_id="NEW88", result_count=0)
+        )
+        out = self.ctrl.handle(ConfirmNewPatientId())
+        self.assertEqual(out.view.demography.patient_id, "NEW88")
+        self.assertEqual(out.view.phase, Phase.INTAKE)
+        self.assertIn(Effect.POWER_DEVICES_ON, out.effects)
 
     def test_voice_never_sets_patient_id(self):
         self.ctrl.handle(Hotkey("F1"))

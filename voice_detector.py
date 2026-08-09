@@ -141,6 +141,8 @@ class VoiceDetectorThread(QThread):
     comparison_signal = Signal(str, str, float) # local_text, google_text, similarity_percent
     patient_info_signal = Signal(dict)          # Emits parsed patient demographic dict
 
+    PENDING_FIELD_TIMEOUT_SEC = 3.0  # armed keyword expires if no follow-up value in time
+
     # Vietnamese clinical voice commands
     KEYWORDS = [
         "chụp", "chụp ảnh",
@@ -163,7 +165,7 @@ class VoiceDetectorThread(QThread):
         self.last_trigger_time = 0
         self.cooldown_active = False
         self._pending_field = None      # e.g. 'full_name', 'birth_year', 'gender'
-        self._pending_field_time = 0    # timestamp when pending was set (expires after 8s)
+        self._pending_field_time = 0    # timestamp when pending was set
         self._pending_year_prefix = None  # 3-digit truncated year waiting for final digit
 
     def stop(self):
@@ -309,6 +311,9 @@ class VoiceDetectorThread(QThread):
                         silence_chunks = 0
                         has_speech = True
 
+                    if self._pending_field:
+                        self._maybe_expire_pending()
+
                     # Decode ONLY when actual speech occurred and silence boundary or max buffer reached
                     if len(audio_buffer) >= 12000 and (silence_chunks >= 4 or len(audio_buffer) >= 48000):
                         try:
@@ -353,27 +358,54 @@ class VoiceDetectorThread(QThread):
 
     # ---------- Patient voice processing with pending field state ----------
 
+    def _maybe_expire_pending(self, now: float | None = None) -> bool:
+        """Clear armed field after timeout. Returns True if pending was cleared."""
+        if not self._pending_field:
+            return False
+        now = now if now is not None else time.time()
+        if now - self._pending_field_time < self.PENDING_FIELD_TIMEOUT_SEC:
+            return False
+        logger.info(
+            "[VOICE_PENDING_EXPIRED] Cleared pending '%s' after %.0fs — need keyword again",
+            self._pending_field,
+            self.PENDING_FIELD_TIMEOUT_SEC,
+        )
+        self.log_signal.emit(
+            f"⌛ [HẾT CHỜ ~{int(self.PENDING_FIELD_TIMEOUT_SEC)}s]: "
+            "nói lại từ khóa (vd: họ và tên / năm sinh / giới tính)"
+        )
+        self._pending_field = None
+        self._pending_year_prefix = None
+        return True
+
     def _process_voice_for_patient(self, text: str):
         """
-        Process recognized text for patient demographic input.
-        Supports 2-step input: keyword first (e.g. "họ và tên"), then value (e.g. "Lương Thế Vinh").
-        Also recovers truncated birth years (ASR drops last digit): "một chín chín" + "chín" → 1999.
+        Keyword-gated demography / search-filter fill only:
+          1) Say keyword alone → arm pending (e.g. "họ và tên")
+          2) Next utterance fills that field, or keyword+value in one go
+          3) Pending expires / mismatch → ignore free speech until a new keyword
+        Full-sentence / ambient speech never writes fields.
         """
         try:
             from src.patient_voice_parser import (
-                parse_patient_speech, detect_pending_field, fill_pending_field,
+                detect_pending_field, fill_pending_field, _try_single_field,
                 _viet_words_to_digits, incomplete_birth_year_prefix,
-                complete_truncated_birth_year,
+                complete_truncated_birth_year, normalize_voice_text,
+                normalize_name_keyword,
             )
 
-            # Convert Vietnamese digit words to numbers
-            converted_text = _viet_words_to_digits(text)
+            converted_text = normalize_name_keyword(
+                _viet_words_to_digits(normalize_voice_text(text))
+            )
+            now = time.time()
 
-            # Step A0: Completing a truncated year (prefix "199" + final "chín")
+            self._maybe_expire_pending(now)
+
+            # Completing truncated year only while birth_year pending is armed
             if (
                 self._pending_year_prefix
                 and self._pending_field == "birth_year"
-                and (time.time() - self._pending_field_time < 8.0)
+                and (now - self._pending_field_time < self.PENDING_FIELD_TIMEOUT_SEC)
             ):
                 year = complete_truncated_birth_year(self._pending_year_prefix, text)
                 if year:
@@ -387,26 +419,31 @@ class VoiceDetectorThread(QThread):
                     self.log_signal.emit(f"✅ [NĂM SINH]: {year}")
                     self.patient_info_signal.emit(p_info)
                     return
-                # If next utterance is a full re-speak, fall through
 
-            # Step A: Check if there's a pending field from a previous keyword-only utterance
-            if self._pending_field and (time.time() - self._pending_field_time < 8.0):
+            # Armed pending: only accept value for that field — no free-form fallback
+            if self._pending_field and (
+                now - self._pending_field_time < self.PENDING_FIELD_TIMEOUT_SEC
+            ):
                 pending = self._pending_field
-                # Keep truncated prefix if fill fails with 3 digits
                 p_info = fill_pending_field(pending, converted_text)
                 if p_info:
                     self._pending_field = None
                     self._pending_year_prefix = None
-                    logger.info(f"[VOICE_PENDING_FILLED] Field '{pending}' filled with '{converted_text}': {p_info}")
-                    self.log_signal.emit(f"✅ [ĐIỀN TRƯỜNG]: {pending} ← \"{converted_text}\"")
+                    logger.info(
+                        f"[VOICE_PENDING_FILLED] Field '{pending}' filled with '{converted_text}': {p_info}"
+                    )
+                    self.log_signal.emit(
+                        f"✅ [ĐIỀN TRƯỜNG]: {pending} ← \"{converted_text}\""
+                    )
                     self.patient_info_signal.emit(p_info)
                     return
                 if pending == "birth_year":
-                    prefix = incomplete_birth_year_prefix(converted_text) or incomplete_birth_year_prefix(text)
+                    prefix = incomplete_birth_year_prefix(
+                        converted_text, allow_bare=True
+                    ) or incomplete_birth_year_prefix(text, allow_bare=True)
                     if prefix:
                         self._pending_year_prefix = prefix
-                        self._pending_field = "birth_year"
-                        self._pending_field_time = time.time()
+                        self._pending_field_time = now
                         logger.info(
                             f"[VOICE_YEAR_TRUNCATED] Got prefix '{prefix}', waiting for last digit"
                         )
@@ -414,47 +451,73 @@ class VoiceDetectorThread(QThread):
                             f"⏳ [NĂM SINH {prefix}_]: nói thêm chữ số cuối (vd: chín)"
                         )
                         return
+                # New keyword while pending → switch target instead of dumping free text
+                new_pending = detect_pending_field(converted_text)
+                if new_pending:
+                    self._pending_field = new_pending
+                    self._pending_field_time = now
+                    self._pending_year_prefix = None
+                    logger.info(
+                        f"[VOICE_PENDING_SWITCH] Now waiting for field: '{new_pending}'"
+                    )
+                    self.log_signal.emit(
+                        f"⏳ [CHỜ NHẬP]: {new_pending.upper().replace('_', ' ')}..."
+                    )
+                    return
+                # Same-utterance keyword+value while pending (e.g. "năm sinh 1992")
+                p_info = _try_single_field(converted_text)
+                if p_info:
+                    self._pending_field = None
+                    self._pending_year_prefix = None
+                    logger.info(f"[VOICE_KEYWORD_FIELD] {p_info}")
+                    self.patient_info_signal.emit(p_info)
+                    return
                 logger.info(
-                    f"[VOICE_PENDING_MISMATCH] Pending '{pending}' but text '{converted_text}' doesn't fit. Trying normal parse..."
+                    "[VOICE_PENDING_MISMATCH] Pending '%s' but '%s' ignored — need keyword/value",
+                    pending,
+                    converted_text,
                 )
-                self._pending_field = None
-                self._pending_year_prefix = None
-                # Fall through to normal parsing
-            else:
-                # Clear expired pending
-                self._pending_field = None
-                self._pending_year_prefix = None
+                return
 
-            # Step B: Try normal parse (single-field keyword+data or full sentence)
-            p_info = parse_patient_speech(converted_text)
+            # Not armed: keyword+value in one utterance only
+            p_info = _try_single_field(converted_text)
             if p_info:
-                logger.info(f"[VOICE_PATIENT_PARSED] Extracted Patient Info: {p_info}")
+                logger.info(f"[VOICE_KEYWORD_FIELD] {p_info}")
                 self.patient_info_signal.emit(p_info)
                 return
 
-            # Step B2: Truncated năm-sinh + 3 digits → wait for final digit (do not invent 1990)
-            prefix = incomplete_birth_year_prefix(text)
+            # "năm sinh một chín chín" (3 digits) → arm birth_year + truncated prefix
+            prefix = incomplete_birth_year_prefix(converted_text)
             if prefix:
                 self._pending_field = "birth_year"
                 self._pending_year_prefix = prefix
-                self._pending_field_time = time.time()
+                self._pending_field_time = now
                 logger.info(
                     f"[VOICE_YEAR_TRUNCATED] ASR incomplete year '{prefix}', waiting for last digit"
                 )
                 self.log_signal.emit(
-                    f"⏳ [NĂM SINH {prefix}_]: ASR thiếu số cuối — nói thêm (vd: chín → {prefix}9)"
+                    f"⏳ [NĂM SINH {prefix}_]: nói thêm chữ số cuối (vd: chín → {prefix}9)"
                 )
                 return
 
-            # Step C: Check if this is a keyword-only utterance → set pending field
+            # Keyword alone → arm pending for next utterance
             pending = detect_pending_field(converted_text)
             if pending:
                 self._pending_field = pending
-                self._pending_field_time = time.time()
+                self._pending_field_time = now
                 self._pending_year_prefix = None
-                logger.info(f"[VOICE_PENDING_SET] Waiting for next utterance to fill field: '{pending}'")
-                self.log_signal.emit(f"⏳ [CHỜ NHẬP]: {pending.upper().replace('_', ' ')}... (nói tiếp nội dung)")
+                logger.info(
+                    f"[VOICE_PENDING_SET] Waiting for next utterance to fill field: '{pending}'"
+                )
+                self.log_signal.emit(
+                    f"⏳ [CHỜ {pending.upper().replace('_', ' ')}]: nói giá trị trong ~{int(self.PENDING_FIELD_TIMEOUT_SEC)} giây"
+                )
                 return
+
+            logger.debug(
+                "[VOICE_IGNORE] No field keyword in '%s' — skip demography fill",
+                text,
+            )
 
         except Exception as p_err:
             logger.warning(f"[PATIENT_VOICE_PARSE_ERR] {p_err}")

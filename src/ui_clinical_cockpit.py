@@ -1,11 +1,12 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QScrollArea, QFrame, QMessageBox, QSizePolicy
+    QPushButton, QScrollArea, QFrame, QMessageBox, QSizePolicy, QComboBox
 )
 from PySide6.QtCore import Qt, Signal
 from src.patient_search_service import PatientSearchService
-from src.ui_patient_grid import PatientGridDialog
 from src.multimodal_dispatcher import MultiModalDispatcher, ActionType
+from src.patient_session_controller import Field, Phase
+from src.ui_gender_combo import make_gender_combo, set_gender_combo, gender_combo_value
 
 from PySide6.QtGui import QPixmap
 
@@ -63,17 +64,18 @@ class ClinicalCockpitWidget(QWidget):
         self.input_name.setPlaceholderText("Họ và tên *")
         self.input_birth = QLineEdit()
         self.input_birth.setPlaceholderText("Năm sinh *")
-        self.input_gender = QLineEdit()
-        self.input_gender.setPlaceholderText("Nam/Nữ *")
+        self.input_gender = make_gender_combo()
 
-        for inp in (self.input_id, self.input_name, self.input_birth, self.input_gender):
+        for inp in (self.input_id, self.input_name, self.input_birth):
             inp.setStyleSheet("background-color: #1e293b; color: #f8fafc; border: 1px solid #334155; padding: 6px; border-radius: 4px;")
             banner_layout.addWidget(inp)
+        banner_layout.addWidget(self.input_gender)
 
-        self.btn_search = QPushButton("🔍 F5 Tìm hồ sơ")
+        self.btn_search = QPushButton("🔍 F5 Thư mục")
         self.btn_search.setCursor(Qt.PointingHandCursor)
+        self.btn_search.setToolTip("F5 — mở Tab Thư Mục Bệnh Án để tìm / chọn hồ sơ")
         self.btn_search.setStyleSheet("background-color: #0284c7; color: white; font-weight: bold; padding: 6px 12px; border-radius: 4px;")
-        self.btn_search.clicked.connect(self.open_search_grid)
+        # Click wiring: MainWindow disconnects and routes through Hotkey("F5")
         banner_layout.addWidget(self.btn_search)
 
         self.btn_start = QPushButton("🚀 F1 Mở phiên")
@@ -170,7 +172,7 @@ class ClinicalCockpitWidget(QWidget):
         self.is_session_open = is_open
         for inp in (self.input_id, self.input_name, self.input_birth, self.input_gender):
             inp.setEnabled(is_open)
-        self.btn_search.setEnabled(is_open)
+        self.btn_search.setEnabled(True)  # Standby OK — browse old records without F1
         self.btn_complete.setEnabled(is_open)
         
         if is_open:
@@ -214,11 +216,8 @@ class ClinicalCockpitWidget(QWidget):
             )
 
     def open_search_grid(self):
-        if not self.is_session_open:
-            return
-        dialog = PatientGridDialog(self.search_service, self)
-        dialog.patient_selected.connect(self.load_patient)
-        dialog.exec()
+        """Legacy multimodal hook — search is Tab 2 via MainWindow Hotkey F5."""
+        return
 
     def load_patient(self, patient_data: dict):
         if not self.is_session_open:
@@ -227,7 +226,7 @@ class ClinicalCockpitWidget(QWidget):
         self.input_id.setText(patient_data.get("patient_id", ""))
         self.input_name.setText(patient_data.get("full_name", ""))
         self.input_birth.setText(patient_data.get("birth_year", ""))
-        self.input_gender.setText(patient_data.get("gender", ""))
+        set_gender_combo(self.input_gender, patient_data.get("gender", ""))
         
         has_baseline = bool(patient_data.get("has_baseline", False))
         if has_baseline:
@@ -263,7 +262,7 @@ class ClinicalCockpitWidget(QWidget):
                 self.input_birth.setText(patient_data["birth_year"])
                 updated_fields.append(f"Năm sinh: {patient_data['birth_year']}")
             if "gender" in patient_data:
-                self.input_gender.setText(patient_data["gender"])
+                set_gender_combo(self.input_gender, patient_data["gender"])
                 updated_fields.append(f"Giới tính: {patient_data['gender']}")
             if "patient_id" in patient_data:
                 self.input_id.setText(patient_data["patient_id"])
@@ -284,7 +283,7 @@ class ClinicalCockpitWidget(QWidget):
                 self.input_birth.setText(patient_data["birth_year"])
                 updated_fields.append(patient_data["birth_year"])
             if "gender" in patient_data:
-                self.input_gender.setText(patient_data["gender"])
+                set_gender_combo(self.input_gender, patient_data["gender"])
                 updated_fields.append(patient_data["gender"])
             if "patient_id" in patient_data:
                 self.input_id.setText(patient_data["patient_id"])
@@ -323,7 +322,7 @@ class ClinicalCockpitWidget(QWidget):
         self.input_id.setText(_ui_text(demo.patient_id))
         self.input_name.setText(_ui_text(demo.full_name))
         self.input_birth.setText("" if demo.birth_year is None else str(demo.birth_year))
-        self.input_gender.setText(_ui_text(demo.gender))
+        set_gender_combo(self.input_gender, _ui_text(demo.gender))
 
         editable = aff.editable
         self.input_id.setEnabled(is_open and Field.PATIENT_ID in editable)
@@ -390,10 +389,10 @@ class ClinicalCockpitWidget(QWidget):
                 )
             else:
                 field_hints = {
-                    Field.PATIENT_ID: "Mã BN",
-                    Field.FULL_NAME: "Họ tên",
+                    Field.PATIENT_ID: "Mã BN (gõ/F5)",
+                    Field.FULL_NAME: 'Họ tên — nói "họ và tên …"',
                     Field.BIRTH_YEAR: 'Năm sinh — nói "năm sinh …"',
-                    Field.GENDER: "Giới tính",
+                    Field.GENDER: 'Giới tính — nói "giới tính nam/nữ"',
                 }
                 missing = " — ".join(
                     field_hints.get(f, f.value) for f in sorted(view.missing_for_gate, key=lambda x: x.value)
@@ -482,7 +481,7 @@ class ClinicalCockpitWidget(QWidget):
         self.input_id.clear()
         self.input_name.clear()
         self.input_birth.clear()
-        self.input_gender.clear()
+        set_gender_combo(self.input_gender, None)
         self.baseline_label.setText("[Chưa có ảnh Baseline]")
         self.baseline_panel.setVisible(False)
         for i in reversed(range(self.filmstrip_layout.count())):

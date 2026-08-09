@@ -130,18 +130,19 @@ def _normalize_year(value: str) -> str | None:
     return None
 
 
-def incomplete_birth_year_prefix(text: str) -> str | None:
+def incomplete_birth_year_prefix(text: str, *, allow_bare: bool = False) -> str | None:
     """
     If utterance is năm-sinh + exactly 3 digits (ASR truncated year), return those digits.
     Example: "năm sinh một chín chín" → "199"
+
+    Bare 3-digit match (no keyword) only when allow_bare=True — e.g. pending birth_year fill.
     """
     lowered = _viet_words_to_digits(text.strip().lower())
     m = re.search(
         r"(?:năm\s+sinh|sinh\s+năm|nam\s+sinh)\s+(\d{3})\b",
         lowered,
     )
-    if not m:
-        # bare 3-digit after conversion when pending birth_year fills
+    if not m and allow_bare:
         m = re.fullmatch(r"(\d{3})", lowered.strip())
     if not m:
         return None
@@ -197,22 +198,40 @@ SYSTEM_COMMANDS = [
 # Keyword-based single-field voice commands
 # ---------------------------------------------------------------------------
 
+_ASR_FILLER_SUFFIXES = frozenset({"ạ", "nhé", "nha", "đi", "ơi", "à"})
+
+
+def normalize_voice_text(text: str) -> str:
+    """Lowercase + collapse whitespace + strip common ASR punctuation."""
+    if not text:
+        return ""
+    lowered = text.strip().lower()
+    lowered = re.sub(r"[,.\?!;:]+", " ", lowered)
+    lowered = re.sub(r"\s+", " ", lowered).strip()
+    return lowered
+
+
+def normalize_name_keyword(text: str) -> str:
+    """Fix common ASR mis-hearings of «họ và tên» before keyword matching."""
+    t = normalize_voice_text(text)
+    t = re.sub(r"\bhọ\s+(?:vào|là|va)\s+tên\b", "họ và tên", t)
+    t = re.sub(r"\bhọ\s+tên\b", "họ và tên", t)
+    return t
+
+
 _FIELD_PATTERNS = [
-    # "Họ và tên <name>" or "Họ tên <name>" or "Tên là <name>" or "Tên <name>"
-    (r'(?:họ\s+và\s+tên|họ\s+tên|tên\s+là|tên)\s+(.+)', "full_name"),
+    # Require explicit name keyword (not bare "tên …" — too easy to false-trigger)
+    (r'(?:họ\s+và\s+tên|họ\s+tên|tên\s+là)\s+(.+)', "full_name"),
     # "Năm sinh <year>" or "Sinh năm <year>" or "Nam sinh <year>"
-    (r'(?:năm\s+sinh|sinh\s+năm|nam\s+sinh|sinh)\s+(\d{3,4})', "birth_year"),
+    (r'(?:năm\s+sinh|sinh\s+năm|nam\s+sinh)\s+(\d{3,4})', "birth_year"),
     # "Tuổi <age>" or "<N> tuổi"
     (r'(?:tuổi)\s+(\d{1,3})', "age"),
     (r'(\d{1,3})\s+tuổi', "age"),
-    # "Giới tính <gender>"
+    # "Giới tính <gender>" — never accept bare nam/nữ
     (r'giới\s+tính\s+(nam|nữ|trai|gái)', "gender"),
-    # "Mã bệnh nhân <id>" or "Mã <id>"
+    # "Mã bệnh nhân <id>" or "Mã <id>" — voice must not set patient_id in app, but keep parse for completeness
     (r'(?:mã\s+bệnh\s+nhân|mã\s+số|mã)\s+([a-z0-9_-]+)', "patient_id"),
 ]
-
-# Standalone gender words (spoken alone without "giới tính" prefix)
-_STANDALONE_GENDER = {"nam": "Nam", "nữ": "Nữ"}
 
 # Words that are NEVER valid patient names
 _NOISE_WORDS = [
@@ -242,12 +261,9 @@ def _try_single_field(text: str) -> dict | None:
     """
     Try to parse text as a single-field keyword command.
     Returns a dict with only the recognized field, or None if no keyword matched.
+    Bare words (e.g. nam/nữ alone) never match — keyword required.
     """
-    lowered = text.strip().lower()
-
-    # Check standalone gender words ("nam" or "nữ" spoken alone)
-    if lowered in _STANDALONE_GENDER:
-        return {"_partial": True, "gender": _STANDALONE_GENDER[lowered]}
+    lowered = normalize_name_keyword(text)
 
     for pattern, field_key in _FIELD_PATTERNS:
         m = re.search(pattern, lowered)
@@ -311,9 +327,12 @@ def parse_patient_speech(text: str) -> dict | None:
     """
     Parses a Vietnamese spoken sentence to extract Patient Demographics.
 
-    Supports two modes:
-    1. Single-field keyword: "Họ và tên Nguyễn Văn An" → partial update of just full_name
-    2. Full sentence: "Bệnh nhân Nguyễn Văn An 1985 Nam" → full patient record
+    Live app path (`voice_detector`) uses keyword-gated `_try_single_field` /
+    pending fill only — not this full-sentence mode.
+
+    This helper remains for tests / offline tools:
+    1. Single-field keyword: "Họ và tên Nguyễn Văn An" → partial update
+    2. Full sentence (legacy): "Bệnh nhân … 1985 Nam" → multi-field
 
     Returns None if text is a system control command or does not contain valid data.
     Patient ID is NEVER auto-generated — it must come from keyboard or barcode only.
@@ -441,12 +460,11 @@ def parse_patient_speech(text: str) -> dict | None:
 #   Step 2: "lương thế vinh" → fill_pending_field → {"_partial": True, "full_name": "Lương Thế Vinh"}
 # ---------------------------------------------------------------------------
 
-# Map keyword-only utterances to the field they refer to
+# Map keyword-only utterances to the field they refer to (exact phrase only)
 _PENDING_FIELD_MAP = {
     "họ và tên": "full_name",
     "họ tên": "full_name",
     "tên là": "full_name",
-    "tên": "full_name",
     "năm sinh": "birth_year",
     "nam sinh": "birth_year",
     "sinh năm": "birth_year",
@@ -460,8 +478,15 @@ def detect_pending_field(text: str) -> str | None:
     Check if text is a keyword-only utterance that should trigger 'pending field' mode.
     Returns the field name ('full_name', 'birth_year', 'gender', 'age') or None.
     """
-    lowered = text.strip().lower()
-    return _PENDING_FIELD_MAP.get(lowered)
+    lowered = normalize_name_keyword(text)
+    if lowered in _PENDING_FIELD_MAP:
+        return _PENDING_FIELD_MAP[lowered]
+    for phrase, field in _PENDING_FIELD_MAP.items():
+        if lowered.startswith(phrase + " "):
+            rest = lowered[len(phrase) :].strip()
+            if not rest or rest in _ASR_FILLER_SUFFIXES:
+                return field
+    return None
 
 
 def fill_pending_field(field: str, text: str) -> dict | None:
@@ -469,7 +494,7 @@ def fill_pending_field(field: str, text: str) -> dict | None:
     Given a pending field name and the next spoken text, produce a partial result dict.
     Returns None if text cannot be used for the given field.
     """
-    lowered = text.strip().lower()
+    lowered = normalize_name_keyword(text)
     # Convert Vietnamese digit words first
     lowered = _viet_words_to_digits(lowered)
 
@@ -500,7 +525,9 @@ def fill_pending_field(field: str, text: str) -> dict | None:
                 result["birth_year"] = normalized
                 return result
         # Exactly 3 digits → incomplete; let caller set truncated pending (return None)
-        if incomplete_birth_year_prefix(lowered) or re.fullmatch(r"\d{3}", lowered.strip()):
+        if incomplete_birth_year_prefix(lowered, allow_bare=True) or re.fullmatch(
+            r"\d{3}", lowered.strip()
+        ):
             return None
         # Try age (1-2 digits) only when clearly an age, not a truncated year
         m = re.search(r"\b(\d{1,2})\b", lowered)
