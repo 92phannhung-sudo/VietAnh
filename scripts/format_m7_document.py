@@ -347,54 +347,123 @@ def put_image_in_paragraph(paragraph, img_path: str, width_cm: float = 10.0):
     r = paragraph.add_run()
     r.add_picture(img_path, width=Cm(width_cm))
 
+def set_cell_no_border(cell):
+    """Xóa toàn bộ viền ô để tạo bảng ẩn không viền (dùng cho ảnh xếp hàng ngang)."""
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+    tcPr = cell._tc.get_or_add_tcPr()
+    tcBorders = tcPr.find(qn('w:tcBorders'))
+    if tcBorders is not None:
+        tcPr.remove(tcBorders)
+    borders_xml = (
+        f'<w:tcBorders {nsdecls("w")}>'
+        f'<w:top w:val="none"/>'
+        f'<w:left w:val="none"/>'
+        f'<w:bottom w:val="none"/>'
+        f'<w:right w:val="none"/>'
+        f'</w:tcBorders>'
+    )
+    tcPr.append(parse_xml(borders_xml))
+
+def insert_side_by_side_image_table(doc: Document, paragraph, img_items, total_width_cm: float = 16.5):
+    """
+    Tạo một bảng 2 hàng, N cột ẩn viền để đặt các ảnh và chú thích cạnh nhau trên cùng 1 hàng:
+    - Hàng 0: Các ảnh (căn giữa trong ô)
+    - Hàng 1: Các chú thích tương ứng (căn giữa trong ô, 10pt, nghiêng)
+    """
+    from docx.enum.table import WD_TABLE_ALIGNMENT
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    cols = len(img_items)
+    col_w_cm = total_width_cm / cols
+    table = doc.add_table(rows=2, cols=cols)
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    table.autofit = False
+    paragraph._p.addnext(table._tbl)
+
+    for row in table.rows:
+        trPr = row._tr.get_or_add_trPr()
+        trPr.append(parse_xml(f'<w:cantSplit {nsdecls("w")}/>'))
+
+    for c_i, (img_path, cap_text, w_cm) in enumerate(img_items):
+        c_img = table.cell(0, c_i)
+        c_cap = table.cell(1, c_i)
+        set_cell_no_border(c_img)
+        set_cell_no_border(c_cap)
+        c_img.width = Cm(col_w_cm)
+        c_cap.width = Cm(col_w_cm)
+
+        # Ô ảnh
+        p0 = c_img.paragraphs[0]
+        p0.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p0.paragraph_format.first_line_indent = Cm(0)
+        p0.paragraph_format.space_before = Pt(2)
+        p0.paragraph_format.space_after = Pt(2)
+        p0.paragraph_format.keep_with_next = True
+        r0 = p0.add_run()
+        r0.add_picture(img_path, width=Cm(w_cm))
+
+        # Ô chú thích
+        p1 = c_cap.paragraphs[0]
+        p1.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p1.paragraph_format.first_line_indent = Cm(0)
+        p1.paragraph_format.space_before = Pt(1)
+        p1.paragraph_format.space_after = Pt(3)
+        p1.paragraph_format.line_spacing = 1.1
+        r1 = p1.add_run(cap_text)
+        set_run_font(r1, FONT_NAME, size_pt=10, italic=True)
+
+    paragraph.text = ""
+    return table
+
 def insert_images_and_captions(doc: Document, images_dir: str) -> None:
     """
     Quét và chèn 10 hình ảnh vào các vị trí đánh dấu trong tài liệu:
-    - Ảnh 1: Mã định danh
-    - Ảnh 2: Tai nghe
-    - Ảnh 3: Webcam Logitech C920e (ảnh 3.2 và ảnh 3)
-    - Ảnh 4: Hộp chụp ảnh
-    - Ảnh 5: Đế đặt bệnh phẩm
-    - Ảnh 6: Bàn đạp chân
-    - Ảnh 7: Ảnh 7.1, 7.2, 7.3 quy trình chụp và lưu mẫu
+    - Ảnh 1: Mã định danh (đơn)
+    - Ảnh 2: Tai nghe (đơn)
+    - Ảnh 3: Bảng 2 ảnh side-by-side (Ảnh 3a Webcam + Ảnh 3b Vị trí lắp)
+    - Ảnh 4: Hộp chụp ảnh (đơn)
+    - Ảnh 5: Đế đặt bệnh phẩm (đơn)
+    - Ảnh 6: Bàn đạp chân (đơn)
+    - Ảnh 7: Bảng 3 ảnh side-by-side (Ảnh 7a Tiếp nhận + Ảnh 7b Giao diện + Ảnh 7c Bằng chứng số)
     """
     import unicodedata
     
-    # Định nghĩa danh sách các điểm chèn tối ưu kích thước cân đối
     configs = [
         (
             re.compile(r'^(Ảnh|ảnh)\s+1\b', re.IGNORECASE),
-            [("Ảnh 1.jpg", "Ảnh 1: Mã định danh và mã vạch quản lý bệnh phẩm", 9.0)]
+            [("Ảnh 1.jpg", "Ảnh 1: Mã định danh và mã vạch quản lý bệnh phẩm", 6.5)]
         ),
         (
             re.compile(r'^(Ảnh|ảnh)\s+2\b', re.IGNORECASE),
-            [("Ảnh 2.jpg", "Ảnh 2: Tai nghe có dây tích hợp micro thu nhận giọng nói", 6.8)]
+            [("Ảnh 2.jpg", "Ảnh 2: Tai nghe có dây tích hợp micro thu nhận giọng nói", 5.5)]
         ),
         (
             re.compile(r'^(Ảnh|ảnh)\s+3\b', re.IGNORECASE),
             [
-                ("Ảnh 3.2.jpg", "Ảnh 3a: Webcam Logitech C920e độ phân giải Full HD", 6.5),
-                ("Ảnh 3.jpg", "Ảnh 3b: Vị trí lắp đặt webcam cố định trong hộp chụp", 8.2)
+                ("Ảnh 3.2.jpg", "Ảnh 3a: Webcam Logitech C920e Full HD", 5.5),
+                ("Ảnh 3.jpg", "Ảnh 3b: Vị trí lắp đặt trong hộp chụp", 5.5)
             ]
         ),
         (
             re.compile(r'^(Ảnh|ảnh)\s+4\b', re.IGNORECASE),
-            [("Ảnh 4.jpg", "Ảnh 4: Hộp chụp ảnh tích hợp hệ thống chiếu sáng", 8.8)]
+            [("Ảnh 4.jpg", "Ảnh 4: Hộp chụp ảnh tích hợp hệ thống chiếu sáng", 6.5)]
         ),
         (
             re.compile(r'^(Ảnh|ảnh)\s+5\b', re.IGNORECASE),
-            [("Ảnh 5.jpg", "Ảnh 5: Đế đặt bệnh phẩm có định vị trường quan sát", 8.8)]
+            [("Ảnh 5.jpg", "Ảnh 5: Đế đặt bệnh phẩm có định vị trường quan sát", 6.5)]
         ),
         (
             re.compile(r'^(Ảnh|ảnh)\s+6\b', re.IGNORECASE),
-            [("Ảnh 6.jpg", "Ảnh 6: Bàn đạp chân USB kích hoạt lệnh chụp ảnh rảnh tay", 8.5)]
+            [("Ảnh 6.jpg", "Ảnh 6: Bàn đạp chân USB kích hoạt lệnh chụp ảnh rảnh tay", 6.2)]
         ),
         (
             re.compile(r'^(Ảnh|ảnh)\s+7\b', re.IGNORECASE),
             [
-                ("Ảnh 7.1.jpg", "Ảnh 7a: Thao tác tiếp nhận và chụp lưu mẫu bệnh phẩm tại Khoa", 7.6),
-                ("Ảnh 7.2.jpg", "Ảnh 7b: Giao diện tiếp nhận và quản lý thông tin bệnh phẩm", 7.6),
-                ("Ảnh 7.3.jpg", "Ảnh 7c: Hồ sơ bằng chứng số được liên kết và lưu trữ hoàn chỉnh", 11.5)
+                ("Ảnh 7.1.jpg", "Ảnh 7a: Tiếp nhận và chụp lưu mẫu", 4.8),
+                ("Ảnh 7.2.jpg", "Ảnh 7b: Giao diện tiếp nhận", 4.8),
+                ("Ảnh 7.3.jpg", "Ảnh 7c: Hồ sơ bằng chứng số", 4.8)
             ]
         ),
     ]
@@ -406,23 +475,24 @@ def insert_images_and_captions(doc: Document, images_dir: str) -> None:
             
         for marker_re, img_items in configs:
             if marker_re.search(t):
-                curr_anchor = p
-                first = True
+                # Kiểm tra xem có nhiều ảnh cần xếp hàng ngang không
+                resolved_items = []
                 for img_pattern, caption_text, width_cm in img_items:
                     img_path = find_image_file(images_dir, img_pattern)
-                    if not img_path or not os.path.exists(img_path):
-                        continue
-                        
-                    if first:
-                        put_image_in_paragraph(curr_anchor, img_path, width_cm)
-                        cap_p = insert_paragraph_after(curr_anchor, caption_text, size_pt=11, italic=True)
-                        curr_anchor = cap_p
-                        first = False
-                    else:
-                        img_p = insert_paragraph_after(curr_anchor, "")
-                        put_image_in_paragraph(img_p, img_path, width_cm)
-                        cap_p = insert_paragraph_after(img_p, caption_text, size_pt=11, italic=True)
-                        curr_anchor = cap_p
+                    if img_path and os.path.exists(img_path):
+                        resolved_items.append((img_path, caption_text, width_cm))
+
+                if not resolved_items:
+                    break
+
+                if len(resolved_items) > 1:
+                    # Gom các ảnh thành bảng ẩn viền nằm ngang
+                    insert_side_by_side_image_table(doc, p, resolved_items)
+                else:
+                    # Ảnh đơn
+                    img_path, caption_text, width_cm = resolved_items[0]
+                    put_image_in_paragraph(p, img_path, width_cm)
+                    insert_paragraph_after(p, caption_text, size_pt=11, italic=True)
                 break
 
 def clean_empty_rows_in_author_table(doc: Document) -> None:

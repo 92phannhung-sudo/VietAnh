@@ -87,5 +87,30 @@ class TestM7PageSetupAndTypography(unittest.TestCase):
         self.assertFalse(p2.runs[0].font.bold)
         self.assertNotIn("\n", p2.text)
 
+    def test_insert_side_by_side_image_table(self):
+        doc = Document()
+        p = doc.add_paragraph("Đoạn đánh dấu Ảnh 3")
+        from scripts.format_m7_document import insert_side_by_side_image_table, find_image_file
+        img_dir = "/Volumes/DATA/NguyenVietAnh/docs/report"
+        img3_2 = find_image_file(img_dir, "Ảnh 3.2.jpg")
+        img3 = find_image_file(img_dir, "Ảnh 3.jpg")
+        items = [
+            (img3_2, "Ảnh 3a: Webcam Logitech C920e Full HD", 5.5),
+            (img3, "Ảnh 3b: Vị trí lắp đặt trong hộp chụp", 5.5)
+        ]
+        tbl = insert_side_by_side_image_table(doc, p, items)
+        self.assertIsNotNone(tbl)
+        self.assertEqual(len(tbl.rows), 2)
+        self.assertEqual(len(tbl.columns), 2)
+        # Kiểm tra hình ảnh ở hàng 0
+        self.assertIn("pic:pic", tbl.cell(0, 0).paragraphs[0]._p.xml)
+        self.assertIn("pic:pic", tbl.cell(0, 1).paragraphs[0]._p.xml)
+        # Kiểm tra caption ở hàng 1
+        self.assertIn("Ảnh 3a:", tbl.cell(1, 0).text)
+        self.assertIn("Ảnh 3b:", tbl.cell(1, 1).text)
+        # Kiểm tra thuộc tính không viền
+        borders_xml = tbl.cell(0, 0)._tc.xml
+        self.assertIn('w:val="none"', borders_xml)
+
 if __name__ == '__main__':
     unittest.main()
