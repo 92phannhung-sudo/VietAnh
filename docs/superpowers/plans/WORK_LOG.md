@@ -20,7 +20,7 @@
     + Chuẩn hóa viết hoa danh từ cơ quan: `Tổng cục Hậu cần - Kỹ thuật`.
     + Dòng ngày tháng cuối tài liệu: `Hà Nội, ngày 25 tháng 8 năm 2026`.
   - Tự động đồng bộ sang cả 3 tệp Word: `M7_Thuyet_minh_Cong_trinh_ChuanHoa.docx`, `Bản sao M7 Thuyet minh Cong trinh.docx`, và `Bản sao M7 Thuyet minh Cong trinh (2).docx`.
-  - Xuất file PDF đối soát `M7_Thuyet_minh_Cong_trinh_ChuanHoa.pdf` và xác minh qua `pdfinfo`: bảo đảm kết thúc ở **chính xác 20 trang**.
+  - Gỡ bỏ hoàn toàn việc xuất và lưu trữ file PDF theo đúng yêu cầu người dùng (chỉ sử dụng và quản lý các file Word `.docx` và `.doc`).
 - [x] **Task 4: Sửa tệp `SÁNG KIẾN VIỆT ANH.doc`:**
   - Đồng bộ tất cả các dòng ngày tháng sang `Hà Nội, ngày 25 tháng 8 năm 2026`.
   - Chuẩn hóa địa chỉ thường trú của tác giả Nguyễn Phúc Đẳng: `Thôn Đồng Tân, xã Nguyễn Úy, huyện Kim Bảng, tỉnh Hà Nam`.

@@ -613,15 +613,6 @@ def build_standardized_m7(input_path: str, output_path: str, images_dir: str) ->
             shutil.copyfile(output_path, target_copy)
             print(f"[+] Đã đồng bộ sang: {target_copy}")
 
-    # Xuất PDF đối soát
-    pdf_out = os.path.splitext(output_path)[0] + ".pdf"
-    out_dir = os.path.dirname(output_path)
-    try:
-        subprocess.run(["soffice", "--headless", "--convert-to", "pdf", output_path, "--outdir", out_dir], stdout=subprocess.DEVNULL, check=True)
-        print(f"[+] Đã xuất file PDF đối soát: {pdf_out}")
-    except Exception as e:
-        print(f"[!] Cảnh báo khi xuất PDF: {e}")
-
     print("[+] Hoàn tất tạo file Word chuẩn hóa!")
     return output_path
 
