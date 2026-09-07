@@ -23,6 +23,8 @@ class TestM7PageSetupAndTypography(unittest.TestCase):
         self.assertEqual(p.runs[0].font.name, "Times New Roman")
         self.assertEqual(p.runs[0].font.size, Pt(13))
         self.assertAlmostEqual(p.paragraph_format.first_line_indent.cm, 1.27, places=2)
+        self.assertEqual(p.paragraph_format.line_spacing, 1.15)
+        self.assertEqual(p.paragraph_format.space_after, Pt(1.5))
 
     def test_clean_table_data_and_format_tables(self):
         table = self.doc.add_table(rows=3, cols=5)

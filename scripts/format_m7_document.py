@@ -122,33 +122,33 @@ def apply_typography(doc: Document) -> None:
             if level == 0:  # Tiêu đề lớn
                 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 pf.first_line_indent = Cm(0)
-                pf.space_before = Pt(6)
-                pf.space_after = Pt(6)
-                pf.line_spacing = 1.2
+                pf.space_before = Pt(4)
+                pf.space_after = Pt(4)
+                pf.line_spacing = 1.15
                 for r in p.runs:
                     set_run_font(r, FONT_NAME, size_pt=14, bold=True)
             elif level in (1, 2, 3):  # Đề mục
                 p.alignment = WD_ALIGN_PARAGRAPH.LEFT
                 pf.first_line_indent = Cm(0)
-                pf.space_before = Pt(6)
-                pf.space_after = Pt(3)
-                pf.line_spacing = 1.2
+                pf.space_before = Pt(4)
+                pf.space_after = Pt(2)
+                pf.line_spacing = 1.15
                 for r in p.runs:
                     set_run_font(r, FONT_NAME, size_pt=13, bold=True)
             elif level == 4:  # Chú thích ảnh
                 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 pf.first_line_indent = Cm(0)
-                pf.space_before = Pt(2)
-                pf.space_after = Pt(6)
-                pf.line_spacing = 1.15
+                pf.space_before = Pt(1)
+                pf.space_after = Pt(4)
+                pf.line_spacing = 1.1
                 for r in p.runs:
-                    set_run_font(r, FONT_NAME, size_pt=11, italic=True)
+                    set_run_font(r, FONT_NAME, size_pt=10, italic=True)
             elif level == 5:  # Bước quy trình
                 p.alignment = WD_ALIGN_PARAGRAPH.LEFT
                 pf.first_line_indent = Cm(1.27)
-                pf.space_before = Pt(4)
-                pf.space_after = Pt(2)
-                pf.line_spacing = 1.2
+                pf.space_before = Pt(3)
+                pf.space_after = Pt(1)
+                pf.line_spacing = 1.15
                 for r in p.runs:
                     set_run_font(r, FONT_NAME, size_pt=13, bold=True)
         else:
@@ -156,8 +156,8 @@ def apply_typography(doc: Document) -> None:
             p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
             pf.first_line_indent = Cm(1.27)
             pf.space_before = Pt(0)
-            pf.space_after = Pt(2)
-            pf.line_spacing = 1.2
+            pf.space_after = Pt(1.5)
+            pf.line_spacing = 1.15
             for r in p.runs:
                 set_run_font(r, FONT_NAME, size_pt=13)
 
