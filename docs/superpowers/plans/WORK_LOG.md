@@ -1,7 +1,21 @@
 # NHẬT KÝ HOẠT ĐỘNG DỰ ÁN (WORK LOG)
 *Cập nhật tự động bởi Agent*
 
-## 2026-08-08 → 2026-08-09 — Chạy thử macOS + vá voice / camera / demography UI
+## 2026-09-07 — Chuẩn hóa tài liệu M7 Thuyết minh Công trình và Chèn ảnh theo NĐ 30/2020
+- **Trạng thái chung:** Cổng 1: Yêu cầu & Thiết kế (AUTO-SPEC) — Chờ User phê duyệt
+- **Nhánh:** `main`
+- **Nhiệm vụ:** Khảo sát quy chuẩn văn bản NĐ 30/2020/NĐ-CP, phân tích file `Bản sao M7 Thuyet minh Cong trinh.docx`, lập spec định dạng bảng, chữ, lề và chèn 10 ảnh thực tế.
+
+### 1. Các việc đã hoàn thành
+- [x] Đọc và trích xuất toàn bộ cấu trúc, nội dung, bảng biểu file Word gốc qua `docx` MCP.
+- [x] Khảo sát 10 ảnh thực tế trong thư mục `docs/report/` (`Ảnh 1.jpg` đến `Ảnh 7.3.jpg`).
+- [x] Xác định công cụ: Thư viện `python-docx` (v1.2.0), `enterprise-docx-patcher` pattern, `soffice` (LibreOffice) để kiểm tra PDF.
+- [x] Viết tài liệu đặc tả thiết kế: `docs/superpowers/specs/2026-09-07-docx-standardization-design.md` (Commit: `2cb88c5`).
+
+### 2. Nợ kỹ thuật phát sinh (Technical Debt)
+- [ ] ponytail: Giữ script patcher ngắn gọn (< 150 dòng) trực tiếp bằng Python + `python-docx`, không cài thêm thư viện rườm rà.
+
+---
 - **Trạng thái chung:** Hoàn thành — commit vào `main` + push
 - **Nhánh:** `main`
 - **Nhiệm vụ:** Smoke macOS, sửa regression năm sinh ASR, panel lỗi camera, chữ `"None"` trên ô Mã BN, polish Tab Cài đặt (macOS layout)
