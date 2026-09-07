@@ -23,8 +23,8 @@ class TestM7PageSetupAndTypography(unittest.TestCase):
         self.assertEqual(p.runs[0].font.name, "Times New Roman")
         self.assertEqual(p.runs[0].font.size, Pt(13))
         self.assertAlmostEqual(p.paragraph_format.first_line_indent.cm, 1.27, places=2)
-        self.assertEqual(p.paragraph_format.line_spacing, 1.15)
-        self.assertEqual(p.paragraph_format.space_after, Pt(1.5))
+        self.assertEqual(p.paragraph_format.line_spacing, 1.2)
+        self.assertEqual(p.paragraph_format.space_after, Pt(2.0))
 
     def test_clean_table_data_and_format_tables(self):
         table = self.doc.add_table(rows=3, cols=5)
@@ -61,9 +61,12 @@ class TestM7PageSetupAndTypography(unittest.TestCase):
         insert_images_and_captions(doc, images_dir)
         xml_str = doc._body._element.xml
         self.assertIn("pic:pic", xml_str)
-        # Kiểm tra caption chuẩn đã được tạo
-        captions = [para.text for para in doc.paragraphs if "Ảnh 1:" in para.text]
-        self.assertTrue(len(captions) > 0)
+        # Kiểm tra cụm Ảnh 1 được chèn dưới dạng bảng ẩn 2 ảnh nằm ngang
+        self.assertEqual(len(doc.tables), 1)
+        tbl = doc.tables[0]
+        self.assertEqual(len(tbl.columns), 2)
+        self.assertIn("Ảnh 1a:", tbl.cell(1, 0).text)
+        self.assertIn("Ảnh 1b:", tbl.cell(1, 1).text)
 
     def test_split_soft_break_paragraphs(self):
         doc = Document()

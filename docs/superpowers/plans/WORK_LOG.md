@@ -1,10 +1,36 @@
 # NHẬT KÝ HOẠT ĐỘNG DỰ ÁN (WORK LOG)
 *Cập nhật tự động bởi Agent*
 
-## 2026-09-07 — Triển khai bố cục ảnh hàng ngang (Side-by-Side) & Tối ưu báo cáo đạt đúng 20 trang
+## 2026-09-07 — Chèn Ảnh 1.2 nằm cạnh Ảnh 1 (Side-by-Side) & Khóa chuẩn xác 20 trang
 - **Trạng thái chung:** Hoàn thành (Cổng 4: VERIFICATION & HANDOFF)
 - **Nhánh:** `main`
-- **Nhiệm vụ:** Gom các cụm 2-3 ảnh vào chung 1 hàng (side-by-side) bằng bảng ẩn viền và tinh chỉnh bố cục, giãn dòng 1.15 lines để toàn bộ tài liệu M7 đạt chính xác 20 trang theo Nghị định 30/2020/NĐ-CP.
+- **Nhiệm vụ:** Chèn `Ảnh 1.2.jpg` (Phiếu chỉ định có mã vạch) vào nằm song song cạnh `Ảnh 1.jpg` (Tem mã định danh GPB-ID) trên cùng 1 hàng ngang bằng bảng ẩn viền không kẻ ô. Cắt cúp viền thừa của ảnh, điều chỉnh typography chuẩn NĐ 30/2020 để toàn bộ tài liệu M7 kết thúc chuẩn mực ở chính xác 20 trang.
+
+### 1. Các việc đã hoàn thành
+- [x] **Task 1: Xử lý và tối ưu hóa hình ảnh:**
+  - Cắt cúp phần viền đen trên/dưới của `Ảnh 1.jpg` tạo thành `Ảnh 1_crop.jpg` (1843x1229 px, tỷ lệ ngang 3:2).
+  - Cắt cúp khoảng trắng thừa phía dưới của `Ảnh 1.2.jpg` tạo thành `Ảnh 1.2_crop.jpg` (2155x1509 px, tỷ lệ ngang 3:2).
+  - Đảm bảo hình ảnh sắc nét, cân đối khi đặt trong 2 ô bảng cạnh nhau.
+- [x] **Task 2: Tái cấu trúc chèn Cụm Ảnh 1 thành hàng ngang (`scripts/format_m7_document.py`):**
+  - Đổi cấu hình marker `Ảnh 1` thành bảng ẩn viền 2 cột (mỗi ảnh rộng 5.2 cm):
+    + Ô trái: `Ảnh 1_crop.jpg` + chú thích `Ảnh 1a: Tem mã định danh GPB-ID` (10pt nghiêng).
+    + Ô phải: `Ảnh 1.2_crop.jpg` + chú thích `Ảnh 1b: Phiếu chỉ định có mã vạch` (10pt nghiêng).
+  - Cập nhật hàm `apply_typography` với `line_spacing = 1.2` (nằm trong dải quy định 1.15–1.5 của NĐ 30/2020) và `body_space_after = Pt(2.0)`.
+  - Bổ sung cơ chế tự động đồng bộ sang cả 2 file `.docx`: `M7_Thuyet_minh_Cong_trinh_ChuanHoa.docx` và `Bản sao M7 Thuyet minh Cong trinh.docx`.
+  - Tự động xuất file PDF đối soát `M7_Thuyet_minh_Cong_trinh_ChuanHoa.pdf`.
+- [x] **Task 3: Cập nhật Unit Tests & Kiểm thử toàn diện (`tests/test_format_m7_document.py`):**
+  - Cập nhật test case `test_typography` kiểm tra `line_spacing=1.2` và `space_after=Pt(2.0)`.
+  - Cập nhật `test_insert_images_and_captions` kiểm tra cấu trúc bảng ẩn viền 2 ảnh hàng ngang cho Cụm Ảnh 1.
+  - Chạy toàn bộ 63 unit tests: 63/63 PASS (3 skipped macOS).
+- [x] **Task 4: Xác minh bố cục & Số trang thực tế:**
+  - Chạy `pdfinfo docs/report/M7_Thuyet_minh_Cong_trinh_ChuanHoa.pdf` xác nhận tổng số trang đạt chính xác **20 trang**.
+  - Kiểm tra trực quan Trang 3: `Ảnh 1a` và `Ảnh 1b` nằm ngang song song tuyệt đẹp dưới mục `b) Mã định danh`, nội dung mô tả nối tiếp ngay bên dưới.
+  - Kiểm tra trực quan Trang 20: Chứa 2 đoạn kết luận Mục 5 + Dòng địa danh ngày tháng + Bảng chữ ký tác giả Nguyễn Việt Anh, không bị mồ côi.
+
+### 2. Nợ kỹ thuật phát sinh (Technical Debt)
+- Không phát sinh nợ kỹ thuật mới.
+
+---
 
 ### 1. Các việc đã hoàn thành
 - [x] **Task 1: Tạo bảng ảnh hàng ngang ẩn viền (`insert_side_by_side_image_table`):**

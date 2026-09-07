@@ -107,7 +107,7 @@ def remove_redundant_empty_paragraphs(doc: Document) -> None:
         if not has_pic and not p.text.strip():
             p._p.getparent().remove(p._p)
 
-def apply_typography(doc: Document) -> None:
+def apply_typography(doc: Document, line_spacing: float = 1.2, body_space_after: float = 2.0, heading_space_before: float = 3.0) -> None:
     """Áp dụng quy chuẩn chữ và đoạn văn bản, kiểm soát ngắt trang mồ côi (keep_with_next)."""
     for p in doc.paragraphs:
         t = p.text.strip()
@@ -124,22 +124,22 @@ def apply_typography(doc: Document) -> None:
                 pf.first_line_indent = Cm(0)
                 pf.space_before = Pt(4)
                 pf.space_after = Pt(4)
-                pf.line_spacing = 1.15
+                pf.line_spacing = line_spacing
                 for r in p.runs:
                     set_run_font(r, FONT_NAME, size_pt=14, bold=True)
             elif level in (1, 2, 3):  # Đề mục
                 p.alignment = WD_ALIGN_PARAGRAPH.LEFT
                 pf.first_line_indent = Cm(0)
-                pf.space_before = Pt(4)
+                pf.space_before = Pt(heading_space_before)
                 pf.space_after = Pt(2)
-                pf.line_spacing = 1.15
+                pf.line_spacing = line_spacing
                 for r in p.runs:
                     set_run_font(r, FONT_NAME, size_pt=13, bold=True)
             elif level == 4:  # Chú thích ảnh
                 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 pf.first_line_indent = Cm(0)
                 pf.space_before = Pt(1)
-                pf.space_after = Pt(4)
+                pf.space_after = Pt(3)
                 pf.line_spacing = 1.1
                 for r in p.runs:
                     set_run_font(r, FONT_NAME, size_pt=10, italic=True)
@@ -148,7 +148,7 @@ def apply_typography(doc: Document) -> None:
                 pf.first_line_indent = Cm(1.27)
                 pf.space_before = Pt(3)
                 pf.space_after = Pt(1)
-                pf.line_spacing = 1.15
+                pf.line_spacing = line_spacing
                 for r in p.runs:
                     set_run_font(r, FONT_NAME, size_pt=13, bold=True)
         else:
@@ -156,8 +156,8 @@ def apply_typography(doc: Document) -> None:
             p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
             pf.first_line_indent = Cm(1.27)
             pf.space_before = Pt(0)
-            pf.space_after = Pt(1.5)
-            pf.line_spacing = 1.15
+            pf.space_after = Pt(body_space_after)
+            pf.line_spacing = line_spacing
             for r in p.runs:
                 set_run_font(r, FONT_NAME, size_pt=13)
 
@@ -454,30 +454,33 @@ def insert_images_and_captions(doc: Document, images_dir: str) -> None:
     configs = [
         (
             re.compile(r'^(Ảnh|ảnh)\s+1\b', re.IGNORECASE),
-            [("Ảnh 1.jpg", "Ảnh 1: Mã định danh và mã vạch quản lý bệnh phẩm", 6.5)]
+            [
+                ("Ảnh 1_crop.jpg", "Ảnh 1a: Tem mã định danh GPB-ID", 5.2),
+                ("Ảnh 1.2_crop.jpg", "Ảnh 1b: Phiếu chỉ định có mã vạch", 5.2)
+            ]
         ),
         (
             re.compile(r'^(Ảnh|ảnh)\s+2\b', re.IGNORECASE),
-            [("Ảnh 2.jpg", "Ảnh 2: Tai nghe có dây tích hợp micro thu nhận giọng nói", 5.5)]
+            [("Ảnh 2.jpg", "Ảnh 2: Tai nghe có dây tích hợp micro thu nhận giọng nói", 5.2)]
         ),
         (
             re.compile(r'^(Ảnh|ảnh)\s+3\b', re.IGNORECASE),
             [
-                ("Ảnh 3.2.jpg", "Ảnh 3a: Webcam Logitech C920e Full HD", 5.5),
-                ("Ảnh 3.jpg", "Ảnh 3b: Vị trí lắp đặt trong hộp chụp", 5.5)
+                ("Ảnh 3.2.jpg", "Ảnh 3a: Webcam Logitech C920e Full HD", 5.2),
+                ("Ảnh 3.jpg", "Ảnh 3b: Vị trí lắp đặt trong hộp chụp", 5.2)
             ]
         ),
         (
             re.compile(r'^(Ảnh|ảnh)\s+4\b', re.IGNORECASE),
-            [("Ảnh 4.jpg", "Ảnh 4: Hộp chụp ảnh tích hợp hệ thống chiếu sáng", 6.5)]
+            [("Ảnh 4.jpg", "Ảnh 4: Hộp chụp ảnh tích hợp hệ thống chiếu sáng", 6.0)]
         ),
         (
             re.compile(r'^(Ảnh|ảnh)\s+5\b', re.IGNORECASE),
-            [("Ảnh 5.jpg", "Ảnh 5: Đế đặt bệnh phẩm có định vị trường quan sát", 6.5)]
+            [("Ảnh 5.jpg", "Ảnh 5: Đế đặt bệnh phẩm có định vị trường quan sát", 6.0)]
         ),
         (
             re.compile(r'^(Ảnh|ảnh)\s+6\b', re.IGNORECASE),
-            [("Ảnh 6.jpg", "Ảnh 6: Bàn đạp chân USB kích hoạt lệnh chụp ảnh rảnh tay", 6.2)]
+            [("Ảnh 6.jpg", "Ảnh 6: Bàn đạp chân USB kích hoạt lệnh chụp ảnh rảnh tay", 5.8)]
         ),
         (
             re.compile(r'^(Ảnh|ảnh)\s+7\b', re.IGNORECASE),
@@ -544,8 +547,15 @@ def format_date_paragraph(doc: Document) -> None:
 
 def build_standardized_m7(input_path: str, output_path: str, images_dir: str) -> str:
     """Thực thi toàn bộ quy trình chuẩn hóa tài liệu M7 và lưu file."""
-    print(f"[*] Đang đọc file gốc: {input_path}")
-    doc = Document(input_path)
+    import shutil
+    import subprocess
+    
+    # Ưu tiên đọc từ file sao lưu gốc nếu có để đảm bảo lặp lại sạch sẽ các marker
+    backup_file = os.path.join(images_dir, "Bản sao M7 Thuyet minh Cong trinh_ORIGINAL_BACKUP.docx")
+    src_file = backup_file if os.path.exists(backup_file) else input_path
+
+    print(f"[*] Đang đọc file nguồn: {src_file}")
+    doc = Document(src_file)
 
     print("[*] 1. Căn lề khổ giấy A4 theo Nghị định 30/2020/NĐ-CP...")
     apply_page_setup(doc)
@@ -555,17 +565,33 @@ def build_standardized_m7(input_path: str, output_path: str, images_dir: str) ->
     clean_table_data(doc)
     format_tables(doc)
 
-    print("[*] 3. Chèn 10 hình ảnh và chú thích vào đúng vị trí...")
+    print("[*] 3. Chèn hình ảnh và chú thích vào đúng vị trí...")
     insert_images_and_captions(doc, images_dir)
 
     print("[*] 4. Tách các đoạn chứa soft break và loại bỏ đoạn trống thừa...")
     split_soft_break_paragraphs(doc)
     remove_redundant_empty_paragraphs(doc)
-    apply_typography(doc)
+    apply_typography(doc, line_spacing=1.2, body_space_after=2.0, heading_space_before=3.0)
     format_date_paragraph(doc)
 
     print(f"[*] Đang lưu file chuẩn hóa: {output_path}")
     doc.save(output_path)
+    
+    # Đồng bộ sang file bản sao để người dùng mở file nào cũng thấy kết quả chuẩn xác
+    target_copy = os.path.join(images_dir, "Bản sao M7 Thuyet minh Cong trinh.docx")
+    if os.path.abspath(output_path) != os.path.abspath(target_copy):
+        shutil.copyfile(output_path, target_copy)
+        print(f"[+] Đã đồng bộ sang: {target_copy}")
+
+    # Xuất PDF đối soát
+    pdf_out = os.path.splitext(output_path)[0] + ".pdf"
+    out_dir = os.path.dirname(output_path)
+    try:
+        subprocess.run(["soffice", "--headless", "--convert-to", "pdf", output_path, "--outdir", out_dir], stdout=subprocess.DEVNULL, check=True)
+        print(f"[+] Đã xuất file PDF đối soát: {pdf_out}")
+    except Exception as e:
+        print(f"[!] Cảnh báo khi xuất PDF: {e}")
+
     print("[+] Hoàn tất tạo file Word chuẩn hóa!")
     return output_path
 
