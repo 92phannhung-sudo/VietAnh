@@ -2,18 +2,19 @@
 *Cập nhật tự động bởi Agent*
 
 ## 2026-09-07 — Chuẩn hóa tài liệu M7 Thuyết minh Công trình và Chèn ảnh theo NĐ 30/2020
-- **Trạng thái chung:** Cổng 1: Yêu cầu & Thiết kế (AUTO-SPEC) — Chờ User phê duyệt
+- **Trạng thái chung:** Hoàn thành (Cổng 4: VERIFICATION & HANDOFF)
 - **Nhánh:** `main`
-- **Nhiệm vụ:** Khảo sát quy chuẩn văn bản NĐ 30/2020/NĐ-CP, phân tích file `Bản sao M7 Thuyet minh Cong trinh.docx`, lập spec định dạng bảng, chữ, lề và chèn 10 ảnh thực tế.
+- **Nhiệm vụ:** Chuẩn hóa lề trang, typography, bảng biểu, làm sạch số liệu, chèn 10 ảnh thực tế và xuất bản bản Word/PDF hoàn chỉnh.
 
 ### 1. Các việc đã hoàn thành
-- [x] Đọc và trích xuất toàn bộ cấu trúc, nội dung, bảng biểu file Word gốc qua `docx` MCP.
-- [x] Khảo sát 10 ảnh thực tế trong thư mục `docs/report/` (`Ảnh 1.jpg` đến `Ảnh 7.3.jpg`).
-- [x] Xác định công cụ: Thư viện `python-docx` (v1.2.0), `enterprise-docx-patcher` pattern, `soffice` (LibreOffice) để kiểm tra PDF.
-- [x] Viết tài liệu đặc tả thiết kế: `docs/superpowers/specs/2026-09-07-docx-standardization-design.md` (Commit: `2cb88c5`).
+- [x] Task 1: Thiết lập cấu trúc trang in A4 và Typography theo Nghị định 30 (Top/Bottom 20mm, Left 30mm, Right 15mm; Times New Roman 13pt; indent 1.27cm; line spacing 1.2). Commit: `1e255ea`.
+- [x] Task 2: Chuẩn hóa toàn bộ bảng biểu (viền đơn 0.5pt, header xám 5%, căn lề số tiền sang phải) và làm sạch số liệu (fix lỗi `..` trong đơn giá/thành tiền). Commit: `ad7b09d`.
+- [x] Task 3: Chèn đầy đủ 10 hình ảnh thực tế và chú thích chuẩn in nghiêng 11pt căn giữa (bao gồm Ảnh 1, 2, 3a, 3b, 4, 5, 6, 7a, 7b, 7c). Commit: `eb01b03`.
+- [x] Task 4: Chạy toàn trình tạo file Word `docs/report/M7_Thuyet_minh_Cong_trinh_ChuanHoa.docx` và xuất bản PDF `docs/report/M7_Thuyet_minh_Cong_trinh_ChuanHoa.pdf` qua LibreOffice (24 trang).
+- [x] Kiểm thử toàn bộ dự án: `61/61 tests OK` (3 skipped do PySide6 trên macOS).
 
 ### 2. Nợ kỹ thuật phát sinh (Technical Debt)
-- [ ] ponytail: Giữ script patcher ngắn gọn (< 150 dòng) trực tiếp bằng Python + `python-docx`, không cài thêm thư viện rườm rà.
+- Không phát sinh nợ kỹ thuật mới. Module `scripts/format_m7_document.py` độc lập, tái sử dụng được.
 
 ---
 - **Trạng thái chung:** Hoàn thành — commit vào `main` + push

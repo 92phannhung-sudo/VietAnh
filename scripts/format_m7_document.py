@@ -165,7 +165,8 @@ def format_tables(doc: Document) -> None:
     for table_idx, table in enumerate(doc.tables):
         table.alignment = WD_TABLE_ALIGNMENT.CENTER
         # Kiểm tra xem có phải bảng chữ ký (thường là bảng cuối, 1 hàng, 2 cột)
-        is_signature_table = (len(table.rows) == 1 and len(table.columns) == 2 and "ĐẠI DIỆN" in table.text)
+        tbl_text = " ".join(cell.text for row in table.rows for cell in row.cells)
+        is_signature_table = (len(table.rows) == 1 and len(table.columns) == 2 and "ĐẠI DIỆN" in tbl_text)
         
         if is_signature_table:
             # Bảng chữ ký: không để viền
@@ -336,5 +337,65 @@ def insert_images_and_captions(doc: Document, images_dir: str) -> None:
                         cap_p = insert_paragraph_after(img_p, caption_text, size_pt=11, italic=True)
                         curr_anchor = cap_p
                 break
+
+def clean_empty_rows_in_author_table(doc: Document) -> None:
+    """Xóa các hàng thừa/trống trong Bảng tác giả (Table 0)."""
+    if not doc.tables:
+        return
+    t0 = doc.tables[0]
+    # Duyệt từ dưới lên để xóa an toàn
+    for row in list(t0.rows)[1:]:
+        # Nếu cột họ tên (cột 2) và ngày sinh (cột 3) đều trống thì xóa hàng
+        if len(row.cells) > 3:
+            name_text = row.cells[2].text.strip()
+            dob_text = row.cells[3].text.strip()
+            if not name_text and not dob_text:
+                t0._tbl.remove(row._tr)
+
+def format_date_paragraph(doc: Document) -> None:
+    """Căn phải và in nghiêng dòng ngày tháng địa điểm cuối tài liệu."""
+    for p in doc.paragraphs:
+        t = p.text.strip()
+        if re.search(r'^(Hà Nội|Hà nội),\s*ngày\s+\d+\s+tháng\s+\d+\s+năm\s+\d+', t):
+            p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            p.paragraph_format.first_line_indent = Cm(0)
+            p.paragraph_format.space_before = Pt(12)
+            p.paragraph_format.space_after = Pt(4)
+            for r in p.runs:
+                set_run_font(r, FONT_NAME, size_pt=13, italic=True)
+
+def build_standardized_m7(input_path: str, output_path: str, images_dir: str) -> str:
+    """Thực thi toàn bộ quy trình chuẩn hóa tài liệu M7 và lưu file."""
+    print(f"[*] Đang đọc file gốc: {input_path}")
+    doc = Document(input_path)
+
+    print("[*] 1. Căn lề khổ giấy A4 theo Nghị định 30/2020/NĐ-CP...")
+    apply_page_setup(doc)
+
+    print("[*] 2. Dọn dẹp hàng trống và chuẩn hóa bảng biểu...")
+    clean_empty_rows_in_author_table(doc)
+    clean_table_data(doc)
+    format_tables(doc)
+
+    print("[*] 3. Chèn 10 hình ảnh và chú thích vào đúng vị trí...")
+    insert_images_and_captions(doc, images_dir)
+
+    print("[*] 4. Áp dụng chuẩn Typography (Times New Roman 13pt, căn đều, thụt dòng)...")
+    apply_typography(doc)
+    format_date_paragraph(doc)
+
+    print(f"[*] Đang lưu file chuẩn hóa: {output_path}")
+    doc.save(output_path)
+    print("[+] Hoàn tất tạo file Word chuẩn hóa!")
+    return output_path
+
+if __name__ == '__main__':
+    base_dir = "/Volumes/DATA/NguyenVietAnh"
+    in_file = os.path.join(base_dir, "docs/report/Bản sao M7 Thuyet minh Cong trinh.docx")
+    out_file = os.path.join(base_dir, "docs/report/M7_Thuyet_minh_Cong_trinh_ChuanHoa.docx")
+    img_dir = os.path.join(base_dir, "docs/report")
+
+    build_standardized_m7(in_file, out_file, img_dir)
+
 
 
