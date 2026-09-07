@@ -534,16 +534,41 @@ def clean_empty_rows_in_author_table(doc: Document) -> None:
                 t0._tbl.remove(row._tr)
 
 def format_date_paragraph(doc: Document) -> None:
-    """Căn phải và in nghiêng dòng ngày tháng địa điểm cuối tài liệu."""
+    """Căn phải và in nghiêng dòng ngày tháng địa điểm cuối tài liệu (chuẩn mốc 2026)."""
     for p in doc.paragraphs:
         t = p.text.strip()
         if re.search(r'^(Hà Nội|Hà nội),\s*ngày\s+\d+\s+tháng\s+\d+\s+năm\s+\d+', t):
+            p.text = "Hà Nội, ngày 25 tháng 8 năm 2026"
             p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
             p.paragraph_format.first_line_indent = Cm(0)
             p.paragraph_format.space_before = Pt(12)
             p.paragraph_format.space_after = Pt(4)
             for r in p.runs:
                 set_run_font(r, FONT_NAME, size_pt=13, italic=True)
+
+def standardize_author_and_date_info(doc: Document) -> None:
+    """
+    Chuẩn hóa thông tin nhân thân tác giả và chính tả đơn vị:
+    - Sửa thông tin đồng tác giả Nguyễn Phúc Đẳng (sinh 2002, SĐT 0866085675, email nguyenphucdang15032002@gmail.com).
+    - Chuẩn hóa viết hoa 'Tổng cục Hậu cần - Kỹ thuật'.
+    """
+    for p in doc.paragraphs:
+        if "tổng cục Hậu cần - Kỹ thuật" in p.text:
+            p.text = p.text.replace("tổng cục Hậu cần - Kỹ thuật", "Tổng cục Hậu cần - Kỹ thuật")
+            
+    if doc.tables:
+        t0 = doc.tables[0]
+        for row in list(t0.rows)[1:]:
+            cells = row.cells
+            if len(cells) >= 7:
+                author_info = cells[2].text
+                if "Nguyễn Phúc Đẳng" in author_info:
+                    cells[3].text = "15/03/2002"
+                    cells[4].text = "0866085675"
+                    cells[5].text = "nguyenphucdang15032002@gmail.com"
+                    cells[6].text = "ĐH"
+                elif "Nguyễn Việt Anh" in author_info:
+                    cells[5].text = "nguyenvietanh0609@gmail.com"
 
 def build_standardized_m7(input_path: str, output_path: str, images_dir: str) -> str:
     """Thực thi toàn bộ quy trình chuẩn hóa tài liệu M7 và lưu file."""
@@ -560,8 +585,9 @@ def build_standardized_m7(input_path: str, output_path: str, images_dir: str) ->
     print("[*] 1. Căn lề khổ giấy A4 theo Nghị định 30/2020/NĐ-CP...")
     apply_page_setup(doc)
 
-    print("[*] 2. Dọn dẹp hàng trống và chuẩn hóa bảng biểu...")
+    print("[*] 2. Dọn dẹp hàng trống, chuẩn hóa thông tin tác giả và bảng biểu...")
     clean_empty_rows_in_author_table(doc)
+    standardize_author_and_date_info(doc)
     clean_table_data(doc)
     format_tables(doc)
 
@@ -577,11 +603,15 @@ def build_standardized_m7(input_path: str, output_path: str, images_dir: str) ->
     print(f"[*] Đang lưu file chuẩn hóa: {output_path}")
     doc.save(output_path)
     
-    # Đồng bộ sang file bản sao để người dùng mở file nào cũng thấy kết quả chuẩn xác
-    target_copy = os.path.join(images_dir, "Bản sao M7 Thuyet minh Cong trinh.docx")
-    if os.path.abspath(output_path) != os.path.abspath(target_copy):
-        shutil.copyfile(output_path, target_copy)
-        print(f"[+] Đã đồng bộ sang: {target_copy}")
+    # Đồng bộ sang các file bản sao để người dùng mở file nào cũng thấy kết quả chuẩn xác
+    target_copies = [
+        os.path.join(images_dir, "Bản sao M7 Thuyet minh Cong trinh.docx"),
+        os.path.join(images_dir, "Bản sao M7 Thuyet minh Cong trinh (2).docx"),
+    ]
+    for target_copy in target_copies:
+        if os.path.exists(os.path.dirname(target_copy)) and os.path.abspath(output_path) != os.path.abspath(target_copy):
+            shutil.copyfile(output_path, target_copy)
+            print(f"[+] Đã đồng bộ sang: {target_copy}")
 
     # Xuất PDF đối soát
     pdf_out = os.path.splitext(output_path)[0] + ".pdf"

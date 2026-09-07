@@ -1,10 +1,37 @@
 # NHẬT KÝ HOẠT ĐỘNG DỰ ÁN (WORK LOG)
 *Cập nhật tự động bởi Agent*
 
-## 2026-09-07 — Chèn Ảnh 1.2 nằm cạnh Ảnh 1 (Side-by-Side) & Khóa chuẩn xác 20 trang
+## 2026-09-07 — Đồng bộ mốc thời gian Giải thưởng TTST lần thứ 27 (2026–2027) & Chuẩn hóa nhân thân tác giả
 - **Trạng thái chung:** Hoàn thành (Cổng 4: VERIFICATION & HANDOFF)
 - **Nhánh:** `main`
-- **Nhiệm vụ:** Chèn `Ảnh 1.2.jpg` (Phiếu chỉ định có mã vạch) vào nằm song song cạnh `Ảnh 1.jpg` (Tem mã định danh GPB-ID) trên cùng 1 hàng ngang bằng bảng ẩn viền không kẻ ô. Cắt cúp viền thừa của ảnh, điều chỉnh typography chuẩn NĐ 30/2020 để toàn bộ tài liệu M7 kết thúc chuẩn mực ở chính xác 20 trang.
+- **Nhiệm vụ:** Giải quyết triệt để mâu thuẫn mốc thời gian (lệch từ 2025 đến 2027), thống nhất theo Giải thưởng Tuổi trẻ sáng tạo (TTST) lần thứ 27 (năm 2027) với mốc nghiệm thu & ký hồ sơ: **ngày 25 tháng 8 năm 2026**. Đồng thời sửa lỗi sao chép sai nhân thân của đồng tác giả Nguyễn Phúc Đẳng trên toàn bộ các tệp M1, M7, M8 và tệp .doc.
+
+### 1. Các việc đã hoàn thành
+- [x] **Task 1: Sửa tệp M1 (`Bản sao M1 Phieu dang ky.docx`):**
+  - Sửa lỗi chính tả tên tác giả: `Nguyễn Viêt Anh` -> `Nguyễn Việt Anh`.
+  - Chuẩn hóa tên đơn vị: thay `/BVQY 354/TCHCKT` thành `Khoa Vi sinh – Sinh học phân tử – Giải phẫu bệnh, Bệnh viện Quân y 354, Tổng cục Hậu cần - Kỹ thuật`.
+  - Thống nhất ngày ký: `Hà Nội, ngày 25 tháng 8 năm 2026`.
+- [x] **Task 2: Sửa tệp M8 (`Bản sao M8 Xac nhan Ty le dong gop Cong trinh (1).docx`):**
+  - Cập nhật dòng ngày tháng từ `2025` lên `Hà Nội, ngày 25 tháng 8 năm 2026`.
+  - Xóa các hàng trống thừa trong Bảng 1.
+- [x] **Task 3: Sửa toàn diện các tệp M7 (`scripts/format_m7_document.py`):**
+  - Cập nhật hàm `standardize_author_and_date_info` và `format_date_paragraph`:
+    + Sửa ngày tháng năm sinh của Nguyễn Phúc Đẳng: `15/03/2002`, SĐT: `0866085675`, Email: `nguyenphucdang15032002@gmail.com`, Trình độ: `ĐH`.
+    + Chuẩn hóa viết hoa danh từ cơ quan: `Tổng cục Hậu cần - Kỹ thuật`.
+    + Dòng ngày tháng cuối tài liệu: `Hà Nội, ngày 25 tháng 8 năm 2026`.
+  - Tự động đồng bộ sang cả 3 tệp Word: `M7_Thuyet_minh_Cong_trinh_ChuanHoa.docx`, `Bản sao M7 Thuyet minh Cong trinh.docx`, và `Bản sao M7 Thuyet minh Cong trinh (2).docx`.
+  - Xuất file PDF đối soát `M7_Thuyet_minh_Cong_trinh_ChuanHoa.pdf` và xác minh qua `pdfinfo`: bảo đảm kết thúc ở **chính xác 20 trang**.
+- [x] **Task 4: Sửa tệp `SÁNG KIẾN VIỆT ANH.doc`:**
+  - Đồng bộ tất cả các dòng ngày tháng sang `Hà Nội, ngày 25 tháng 8 năm 2026`.
+  - Chuẩn hóa địa chỉ thường trú của tác giả Nguyễn Phúc Đẳng: `Thôn Đồng Tân, xã Nguyễn Úy, huyện Kim Bảng, tỉnh Hà Nam`.
+- [x] **Task 5: TDD & Kiểm thử tự động:**
+  - Viết mới bộ test `tests/test_dossier_consistency.py` (3 test cases kiểm tra chéo tính đồng bộ thời gian 2026 và nhân thân tác giả trên toàn bộ hồ sơ).
+  - Kết quả: Toàn bộ 66 tests trong dự án PASS 100%.
+
+### 2. Nợ kỹ thuật phát sinh (Technical Debt)
+- Không phát sinh nợ kỹ thuật mới.
+
+---
 
 ### 1. Các việc đã hoàn thành
 - [x] **Task 1: Xử lý và tối ưu hóa hình ảnh:**
