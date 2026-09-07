@@ -216,3 +216,125 @@ def format_tables(doc: Document) -> None:
                         bold = is_header or is_total_row
                         set_run_font(r, FONT_NAME, size_pt=11, bold=bold)
 
+def find_image_file(images_dir: str, pattern: str) -> str:
+    """Tìm file ảnh theo tên không phân biệt hoa thường và chuẩn Unicode NFC/NFD."""
+    import unicodedata
+    norm_pattern = unicodedata.normalize('NFC', pattern).lower()
+    if not os.path.exists(images_dir):
+        return ""
+    for fname in os.listdir(images_dir):
+        if unicodedata.normalize('NFC', fname).lower() == norm_pattern:
+            return os.path.join(images_dir, fname)
+    for fname in os.listdir(images_dir):
+        if norm_pattern in unicodedata.normalize('NFC', fname).lower():
+            return os.path.join(images_dir, fname)
+    return ""
+
+def insert_paragraph_after(paragraph, text="", size_pt=11, italic=True, bold=False):
+    """Tạo một đoạn văn bản mới ngay sau đoạn văn bản hiện tại."""
+    from docx.text.paragraph import Paragraph
+    p_new = OxmlElement("w:p")
+    paragraph._p.addnext(p_new)
+    new_para = Paragraph(p_new, paragraph._parent)
+    new_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    pf = new_para.paragraph_format
+    pf.first_line_indent = Cm(0)
+    pf.space_before = Pt(2)
+    pf.space_after = Pt(6)
+    if text:
+        r = new_para.add_run(text)
+        set_run_font(r, FONT_NAME, size_pt=size_pt, italic=italic, bold=bold)
+    return new_para
+
+def put_image_in_paragraph(paragraph, img_path: str, width_cm: float = 10.0):
+    """Đặt ảnh căn giữa vào đoạn văn bản."""
+    paragraph.text = ""
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    pf = paragraph.paragraph_format
+    pf.first_line_indent = Cm(0)
+    pf.space_before = Pt(6)
+    pf.space_after = Pt(2)
+    r = paragraph.add_run()
+    r.add_picture(img_path, width=Cm(width_cm))
+
+def insert_images_and_captions(doc: Document, images_dir: str) -> None:
+    """
+    Quét và chèn 10 hình ảnh vào các vị trí đánh dấu trong tài liệu:
+    - Ảnh 1: Mã định danh
+    - Ảnh 2: Tai nghe
+    - Ảnh 3: Webcam Logitech C920e (ảnh 3.2 và ảnh 3)
+    - Ảnh 4: Hộp chụp ảnh
+    - Ảnh 5: Đế đặt bệnh phẩm
+    - Ảnh 6: Bàn đạp chân
+    - Ảnh 7: Ảnh 7.1, 7.2, 7.3 quy trình chụp và lưu mẫu
+    """
+    import unicodedata
+    
+    # Định nghĩa danh sách các điểm chèn
+    # (regex_marker, [(image_pattern, caption_text, width_cm)])
+    configs = [
+        (
+            re.compile(r'^(Ảnh|ảnh)\s+1\b', re.IGNORECASE),
+            [("Ảnh 1.jpg", "Ảnh 1: Mã định danh và mã vạch quản lý bệnh phẩm", 9.5)]
+        ),
+        (
+            re.compile(r'^(Ảnh|ảnh)\s+2\b', re.IGNORECASE),
+            [("Ảnh 2.jpg", "Ảnh 2: Tai nghe có dây tích hợp micro thu nhận giọng nói", 8.0)]
+        ),
+        (
+            re.compile(r'^(Ảnh|ảnh)\s+3\b', re.IGNORECASE),
+            [
+                ("Ảnh 3.2.jpg", "Ảnh 3a: Webcam Logitech C920e độ phân giải Full HD", 7.5),
+                ("Ảnh 3.jpg", "Ảnh 3b: Vị trí lắp đặt webcam cố định trong hộp chụp", 9.5)
+            ]
+        ),
+        (
+            re.compile(r'^(Ảnh|ảnh)\s+4\b', re.IGNORECASE),
+            [("Ảnh 4.jpg", "Ảnh 4: Hộp chụp ảnh tích hợp hệ thống chiếu sáng", 9.5)]
+        ),
+        (
+            re.compile(r'^(Ảnh|ảnh)\s+5\b', re.IGNORECASE),
+            [("Ảnh 5.jpg", "Ảnh 5: Đế đặt bệnh phẩm có định vị trường quan sát", 9.5)]
+        ),
+        (
+            re.compile(r'^(Ảnh|ảnh)\s+6\b', re.IGNORECASE),
+            [("Ảnh 6.jpg", "Ảnh 6: Bàn đạp chân USB kích hoạt lệnh chụp ảnh rảnh tay", 9.5)]
+        ),
+        (
+            re.compile(r'^(Ảnh|ảnh)\s+7\b', re.IGNORECASE),
+            [
+                ("Ảnh 7.1.jpg", "Ảnh 7a: Thao tác tiếp nhận và chụp lưu mẫu bệnh phẩm tại Khoa", 9.5),
+                ("Ảnh 7.2.jpg", "Ảnh 7b: Giao diện tiếp nhận và quản lý thông tin bệnh phẩm", 9.5),
+                ("Ảnh 7.3.jpg", "Ảnh 7c: Hồ sơ bằng chứng số được liên kết và lưu trữ hoàn chỉnh", 12.0)
+            ]
+        ),
+    ]
+
+    for p in list(doc.paragraphs):
+        t = unicodedata.normalize('NFC', p.text.strip())
+        if not t:
+            continue
+            
+        for marker_re, img_items in configs:
+            if marker_re.search(t):
+                # Tìm thấy vị trí đánh dấu ảnh
+                curr_anchor = p
+                first = True
+                for img_pattern, caption_text, width_cm in img_items:
+                    img_path = find_image_file(images_dir, img_pattern)
+                    if not img_path or not os.path.exists(img_path):
+                        continue
+                        
+                    if first:
+                        put_image_in_paragraph(curr_anchor, img_path, width_cm)
+                        cap_p = insert_paragraph_after(curr_anchor, caption_text, size_pt=11, italic=True)
+                        curr_anchor = cap_p
+                        first = False
+                    else:
+                        img_p = insert_paragraph_after(curr_anchor, "")
+                        put_image_in_paragraph(img_p, img_path, width_cm)
+                        cap_p = insert_paragraph_after(img_p, caption_text, size_pt=11, italic=True)
+                        curr_anchor = cap_p
+                break
+
+

@@ -50,5 +50,17 @@ class TestM7PageSetupAndTypography(unittest.TestCase):
         self.assertEqual(table.cell(2, 4).text, "290.000")
         self.assertEqual(table.cell(0, 0).paragraphs[0].runs[0].font.bold, True)
 
+    def test_insert_images_and_captions(self):
+        doc = Document()
+        p = doc.add_paragraph("Ảnh 1 : Mã định danh")
+        from scripts.format_m7_document import insert_images_and_captions
+        images_dir = "/Volumes/DATA/NguyenVietAnh/docs/report"
+        insert_images_and_captions(doc, images_dir)
+        xml_str = doc._body._element.xml
+        self.assertIn("pic:pic", xml_str)
+        # Kiểm tra caption chuẩn đã được tạo
+        captions = [para.text for para in doc.paragraphs if "Ảnh 1:" in para.text]
+        self.assertTrue(len(captions) > 0)
+
 if __name__ == '__main__':
     unittest.main()
