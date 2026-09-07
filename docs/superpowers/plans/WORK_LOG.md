@@ -19,7 +19,7 @@
     + Sửa ngày tháng năm sinh của Nguyễn Phúc Đẳng: `15/03/2002`, SĐT: `0866085675`, Email: `nguyenphucdang15032002@gmail.com`, Trình độ: `ĐH`.
     + Chuẩn hóa viết hoa danh từ cơ quan: `Tổng cục Hậu cần - Kỹ thuật`.
     + Dòng ngày tháng cuối tài liệu: `Hà Nội, ngày 25 tháng 8 năm 2026`.
-  - Tự động đồng bộ sang cả 3 tệp Word: `M7_Thuyet_minh_Cong_trinh_ChuanHoa.docx`, `Bản sao M7 Thuyet minh Cong trinh.docx`, và `Bản sao M7 Thuyet minh Cong trinh (2).docx`.
+  - Dọn dẹp triệt để thư mục: Xóa các bản sao M7 thừa (`Bản sao M7 Thuyet minh Cong trinh (2).docx`, `Bản sao M7 Thuyet minh Cong trinh.docx`, `M7_Thuyet_minh_Cong_trinh_ChuanHoa.docx`), chuyển bản gốc vào `.backup/`, chỉ duy trì DUY NHẤT 1 tệp M7 chính thức: `docs/report/M7 Thuyet minh Cong trinh.docx`.
   - Gỡ bỏ hoàn toàn việc xuất và lưu trữ file PDF theo đúng yêu cầu người dùng (chỉ sử dụng và quản lý các file Word `.docx` và `.doc`).
 - [x] **Task 4: Sửa tệp `SÁNG KIẾN VIỆT ANH.doc`:**
   - Đồng bộ tất cả các dòng ngày tháng sang `Hà Nội, ngày 25 tháng 8 năm 2026`.

@@ -576,7 +576,9 @@ def build_standardized_m7(input_path: str, output_path: str, images_dir: str) ->
     import subprocess
     
     # Ưu tiên đọc từ file sao lưu gốc nếu có để đảm bảo lặp lại sạch sẽ các marker
-    backup_file = os.path.join(images_dir, "Bản sao M7 Thuyet minh Cong trinh_ORIGINAL_BACKUP.docx")
+    backup_file = os.path.join(images_dir, ".backup", "Bản sao M7 Thuyet minh Cong trinh_ORIGINAL_BACKUP.docx")
+    if not os.path.exists(backup_file):
+        backup_file = os.path.join(images_dir, "Bản sao M7 Thuyet minh Cong trinh_ORIGINAL_BACKUP.docx")
     src_file = backup_file if os.path.exists(backup_file) else input_path
 
     print(f"[*] Đang đọc file nguồn: {src_file}")
@@ -600,26 +602,16 @@ def build_standardized_m7(input_path: str, output_path: str, images_dir: str) ->
     apply_typography(doc, line_spacing=1.2, body_space_after=2.0, heading_space_before=3.0)
     format_date_paragraph(doc)
 
-    print(f"[*] Đang lưu file chuẩn hóa: {output_path}")
+    print(f"[*] Đang lưu file duy nhất: {output_path}")
     doc.save(output_path)
-    
-    # Đồng bộ sang các file bản sao để người dùng mở file nào cũng thấy kết quả chuẩn xác
-    target_copies = [
-        os.path.join(images_dir, "Bản sao M7 Thuyet minh Cong trinh.docx"),
-        os.path.join(images_dir, "Bản sao M7 Thuyet minh Cong trinh (2).docx"),
-    ]
-    for target_copy in target_copies:
-        if os.path.exists(os.path.dirname(target_copy)) and os.path.abspath(output_path) != os.path.abspath(target_copy):
-            shutil.copyfile(output_path, target_copy)
-            print(f"[+] Đã đồng bộ sang: {target_copy}")
 
-    print("[+] Hoàn tất tạo file Word chuẩn hóa!")
+    print("[+] Hoàn tất tạo file M7 duy nhất chuẩn hóa!")
     return output_path
 
 if __name__ == '__main__':
     base_dir = "/Volumes/DATA/NguyenVietAnh"
-    in_file = os.path.join(base_dir, "docs/report/Bản sao M7 Thuyet minh Cong trinh.docx")
-    out_file = os.path.join(base_dir, "docs/report/M7_Thuyet_minh_Cong_trinh_ChuanHoa.docx")
+    in_file = os.path.join(base_dir, "docs/report/.backup/Bản sao M7 Thuyet minh Cong trinh_ORIGINAL_BACKUP.docx")
+    out_file = os.path.join(base_dir, "docs/report/M7 Thuyet minh Cong trinh.docx")
     img_dir = os.path.join(base_dir, "docs/report")
 
     build_standardized_m7(in_file, out_file, img_dir)

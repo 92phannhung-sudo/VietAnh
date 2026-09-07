@@ -8,7 +8,7 @@ class TestDossierConsistency(unittest.TestCase):
         self.base_dir = "/Volumes/DATA/NguyenVietAnh/docs/report"
         self.m1_path = os.path.join(self.base_dir, "Bản sao M1 Phieu dang ky.docx")
         self.m8_path = os.path.join(self.base_dir, "Bản sao M8 Xac nhan Ty le dong gop Cong trinh (1).docx")
-        self.m7_path = os.path.join(self.base_dir, "M7_Thuyet_minh_Cong_trinh_ChuanHoa.docx")
+        self.m7_path = os.path.join(self.base_dir, "M7 Thuyet minh Cong trinh.docx")
 
     def test_m1_date_and_author(self):
         self.assertTrue(os.path.exists(self.m1_path), "File M1 không tồn tại")
