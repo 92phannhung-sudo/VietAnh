@@ -70,7 +70,34 @@ def is_title_or_heading(text: str) -> tuple[bool, int, str]:
     if re.match(r'^(Ảnh|ảnh|Hình|hình)\s+\d+', t):
         return True, 4, "CENTER"
 
+    # Bước quy trình: "Bước 1. ", "Bước 2. ", ...
+    if re.match(r'^Bước\s+\d+\.', t, re.IGNORECASE):
+        return True, 5, "LEFT"
+
     return False, 0, "JUSTIFY"
+
+def split_soft_break_paragraphs(doc: Document) -> None:
+    """
+    Tách các đoạn văn bản có chứa ký tự xuống dòng mềm (\\n hoặc <w:br/>) thành các đoạn văn riêng biệt.
+    Điều này triệt tiêu hoàn toàn lỗi stretched justification (kéo dãn khoảng cách chữ) khi căn lề Justify.
+    """
+    from docx.text.paragraph import Paragraph
+    for p in list(doc.paragraphs):
+        if "\n" in p.text:
+            lines = [line.strip() for line in p.text.split("\n") if line.strip()]
+            if len(lines) <= 1:
+                if lines:
+                    p.text = lines[0]
+                continue
+            
+            p.text = lines[0]
+            curr_p = p
+            for line in lines[1:]:
+                p_new = OxmlElement("w:p")
+                curr_p._p.addnext(p_new)
+                new_para = Paragraph(p_new, curr_p._parent)
+                new_para.text = line
+                curr_p = new_para
 
 def remove_redundant_empty_paragraphs(doc: Document) -> None:
     """Loại bỏ các đoạn văn bản trống thừa gây giãn cách và tràn trang không cần thiết."""
@@ -116,6 +143,14 @@ def apply_typography(doc: Document) -> None:
                 pf.line_spacing = 1.15
                 for r in p.runs:
                     set_run_font(r, FONT_NAME, size_pt=11, italic=True)
+            elif level == 5:  # Bước quy trình
+                p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                pf.first_line_indent = Cm(1.27)
+                pf.space_before = Pt(4)
+                pf.space_after = Pt(2)
+                pf.line_spacing = 1.2
+                for r in p.runs:
+                    set_run_font(r, FONT_NAME, size_pt=13, bold=True)
         else:
             # Thân bài
             p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
@@ -432,7 +467,8 @@ def build_standardized_m7(input_path: str, output_path: str, images_dir: str) ->
     print("[*] 3. Chèn 10 hình ảnh và chú thích vào đúng vị trí...")
     insert_images_and_captions(doc, images_dir)
 
-    print("[*] 4. Loại bỏ các đoạn trống thừa và áp dụng chuẩn Typography...")
+    print("[*] 4. Tách các đoạn chứa soft break và loại bỏ đoạn trống thừa...")
+    split_soft_break_paragraphs(doc)
     remove_redundant_empty_paragraphs(doc)
     apply_typography(doc)
     format_date_paragraph(doc)

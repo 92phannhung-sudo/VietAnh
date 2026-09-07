@@ -1,6 +1,7 @@
 import unittest
 from docx import Document
 from docx.shared import Mm, Pt, Cm
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from scripts.format_m7_document import apply_page_setup, apply_typography
 
 class TestM7PageSetupAndTypography(unittest.TestCase):
@@ -61,6 +62,30 @@ class TestM7PageSetupAndTypography(unittest.TestCase):
         # Kiểm tra caption chuẩn đã được tạo
         captions = [para.text for para in doc.paragraphs if "Ảnh 1:" in para.text]
         self.assertTrue(len(captions) > 0)
+
+    def test_split_soft_break_paragraphs(self):
+        doc = Document()
+        p = doc.add_paragraph("Bước 1. Tiếp nhận và đối chiếu bệnh phẩm\nNgười nhận tiếp nhận bệnh phẩm từ người giao; đối chiếu thông tin giữa LIS.")
+        from scripts.format_m7_document import split_soft_break_paragraphs, apply_typography
+        split_soft_break_paragraphs(doc)
+        apply_typography(doc)
+
+        self.assertEqual(len(doc.paragraphs), 2)
+        p1 = doc.paragraphs[0]
+        p2 = doc.paragraphs[1]
+
+        # Paragraph 1: Tiêu đề bước
+        self.assertEqual(p1.text, "Bước 1. Tiếp nhận và đối chiếu bệnh phẩm")
+        self.assertEqual(p1.alignment, WD_ALIGN_PARAGRAPH.LEFT)
+        self.assertTrue(p1.runs[0].font.bold)
+        self.assertTrue(p1.paragraph_format.keep_with_next)
+        self.assertNotIn("\n", p1.text)
+
+        # Paragraph 2: Thân nội dung bước
+        self.assertEqual(p2.text, "Người nhận tiếp nhận bệnh phẩm từ người giao; đối chiếu thông tin giữa LIS.")
+        self.assertEqual(p2.alignment, WD_ALIGN_PARAGRAPH.JUSTIFY)
+        self.assertFalse(p2.runs[0].font.bold)
+        self.assertNotIn("\n", p2.text)
 
 if __name__ == '__main__':
     unittest.main()

@@ -1,6 +1,29 @@
 # NHẬT KÝ HOẠT ĐỘNG DỰ ÁN (WORK LOG)
 *Cập nhật tự động bởi Agent*
 
+## 2026-09-07 — Khắc phục triệt để lỗi giãn cách chữ (Stretched Justification) tại Mục 2.3.4
+- **Trạng thái chung:** Hoàn thành (Cổng 4: VERIFICATION & HANDOFF)
+- **Nhánh:** `main`
+- **Nhiệm vụ:** Sửa lỗi các tiêu đề "Bước 1", "Bước 2", ..., "Bước 7" trong mục 2.3.4 bị dãn khoảng cách chữ rất rộng do soft break `\n` / `<w:br/>` trong đoạn căn lề `JUSTIFY`. Xuất bản file `.docx` chuẩn mực theo yêu cầu người dùng.
+
+### 1. Các việc đã hoàn thành
+- [x] **Điều tra nguyên nhân gốc rễ (Root Cause Investigation):** Phát hiện trong file Word gốc, 7 bước quy trình được lưu trong cùng 1 paragraph với nội dung mô tả qua ký tự ngắt dòng mềm `<w:br/>` (`Shift+Enter`). Khi áp dụng `WD_ALIGN_PARAGRAPH.JUSTIFY`, Word căn đều toàn dòng cho dòng trước `\n`, kéo dãn các từ trong tiêu đề "Bước X..." ra toàn trang.
+- [x] **Giải pháp kỹ thuật:**
+  - Phát triển hàm `split_soft_break_paragraphs(doc: Document)` tự động phân tách các đoạn chứa `\n` thành các paragraph độc lập.
+  - Cập nhật `is_title_or_heading`: Nhận diện mẫu `^Bước\s+\d+\.` là level 5 (tiêu đề bước quy trình).
+  - Cập nhật `apply_typography`: Tiêu đề bước được căn lề trái (`LEFT`), in đậm, thụt lề đầu dòng 1.27cm, `keep_with_next = True`. Đoạn mô tả bên dưới được căn đều hai bên (`JUSTIFY`), chữ thường 13pt, thụt lề 1.27cm.
+- [x] **Quy trình TDD:**
+  - Viết test case `test_split_soft_break_paragraphs` trong `tests/test_format_m7_document.py` (Red -> Green).
+  - Chạy toàn bộ test suite: 62/62 tests PASS (3 skipped do PySide6 trên macOS).
+- [x] **Xuất bản & Kiểm tra:**
+  - Chạy `python3 scripts/format_m7_document.py` cập nhật trực tiếp `docs/report/M7_Thuyet_minh_Cong_trinh_ChuanHoa.docx`.
+  - Xác minh bằng `docx` MCP (`find_text_in_document`, `get_paragraph_text_from_document`): Xác nhận Bước 1 đến Bước 7 đã thành các paragraph độc lập, căn trái, in đậm, không còn bất kỳ ký tự `\n` hay `<w:br/>` nào trong toàn bộ tài liệu.
+
+### 2. Nợ kỹ thuật phát sinh (Technical Debt)
+- Không có nợ kỹ thuật phát sinh.
+
+---
+
 ## 2026-09-07 — Chuẩn hóa tài liệu M7 Thuyết minh Công trình và Chèn ảnh theo NĐ 30/2020
 - **Trạng thái chung:** Hoàn thành (Cổng 4: VERIFICATION & HANDOFF)
 - **Nhánh:** `main`
