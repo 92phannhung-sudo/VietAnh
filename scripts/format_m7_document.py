@@ -72,8 +72,16 @@ def is_title_or_heading(text: str) -> tuple[bool, int, str]:
 
     return False, 0, "JUSTIFY"
 
+def remove_redundant_empty_paragraphs(doc: Document) -> None:
+    """Loại bỏ các đoạn văn bản trống thừa gây giãn cách và tràn trang không cần thiết."""
+    for p in list(doc.paragraphs):
+        # Không xóa nếu đoạn có chứa hình ảnh
+        has_pic = any("pic:pic" in r._r.xml for r in p.runs)
+        if not has_pic and not p.text.strip():
+            p._p.getparent().remove(p._p)
+
 def apply_typography(doc: Document) -> None:
-    """Áp dụng quy chuẩn chữ và đoạn văn bản."""
+    """Áp dụng quy chuẩn chữ và đoạn văn bản, kiểm soát ngắt trang mồ côi (keep_with_next)."""
     for p in doc.paragraphs:
         t = p.text.strip()
         if not t:
@@ -83,6 +91,7 @@ def apply_typography(doc: Document) -> None:
         pf = p.paragraph_format
         
         if is_hd:
+            pf.keep_with_next = True  # Luôn giữ tiêu đề đi liền với nội dung tiếp theo
             if level == 0:  # Tiêu đề lớn
                 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 pf.first_line_indent = Cm(0)
@@ -112,7 +121,7 @@ def apply_typography(doc: Document) -> None:
             p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
             pf.first_line_indent = Cm(1.27)
             pf.space_before = Pt(0)
-            pf.space_after = Pt(3)
+            pf.space_after = Pt(2)
             pf.line_spacing = 1.2
             for r in p.runs:
                 set_run_font(r, FONT_NAME, size_pt=13)
@@ -158,13 +167,42 @@ def set_cell_shading(cell, color_hex="F2F2F2"):
         tcPr.remove(shd)
     tcPr.append(parse_xml(f'<w:shd {nsdecls("w")} w:fill="{color_hex}"/>'))
 
+def set_table_col_widths(table, widths_cm):
+    """Cập nhật độ rộng chuẩn xác cho bảng bằng tblGrid và tcW của từng ô."""
+    table.autofit = False
+    tblPr = table._tbl.tblPr
+    tblGrid = table._tbl.find(qn('w:tblGrid'))
+    if tblGrid is not None:
+        table._tbl.remove(tblGrid)
+        
+    new_tblGrid = OxmlElement('w:tblGrid')
+    for w_cm in widths_cm:
+        gridCol = OxmlElement('w:gridCol')
+        gridCol.set(qn('w:w'), str(int(w_cm * 567)))
+        new_tblGrid.append(gridCol)
+    tblPr.addnext(new_tblGrid)
+    
+    for row in table.rows:
+        for col_idx, cell in enumerate(row.cells):
+            if col_idx < len(widths_cm):
+                w_dxa = int(widths_cm[col_idx] * 567)
+                cell.width = Cm(widths_cm[col_idx])
+                tcPr = cell._tc.get_or_add_tcPr()
+                tcW = tcPr.find(qn('w:tcW'))
+                if tcW is None:
+                    tcW = OxmlElement('w:tcW')
+                    tcPr.append(tcW)
+                tcW.set(qn('w:w'), str(w_dxa))
+                tcW.set(qn('w:type'), 'dxa')
+
 def format_tables(doc: Document) -> None:
     """Chuẩn hóa toàn bộ bảng biểu trong tài liệu theo quy chuẩn hành chính."""
     from docx.enum.table import WD_TABLE_ALIGNMENT, WD_ALIGN_VERTICAL
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
     
     for table_idx, table in enumerate(doc.tables):
         table.alignment = WD_TABLE_ALIGNMENT.CENTER
-        # Kiểm tra xem có phải bảng chữ ký (thường là bảng cuối, 1 hàng, 2 cột)
         tbl_text = " ".join(cell.text for row in table.rows for cell in row.cells)
         is_signature_table = (len(table.rows) == 1 and len(table.columns) == 2 and "ĐẠI DIỆN" in tbl_text)
         
@@ -184,11 +222,26 @@ def format_tables(doc: Document) -> None:
             continue
             
         # Bảng dữ liệu thông thường (Bảng Tác giả, Bảng Giá thành)
+        if len(table.columns) == 5:
+            # Bảng Giá thành: STT (1.5cm), Hạng mục (5.5cm), SL (2.0cm), Đơn giá (3.2cm), Thành tiền (3.5cm)
+            set_table_col_widths(table, [1.5, 5.5, 2.0, 3.2, 3.5])
+        elif len(table.columns) == 7:
+            # Bảng Tác giả: TT (1.0cm), Tên công trình (3.5cm), Cấp bậc họ tên (4.5cm), Ngày sinh (2.0cm), SĐT (2.0cm), Email (2.0cm), Trình độ (1.2cm)
+            set_table_col_widths(table, [1.0, 3.5, 4.5, 2.0, 2.0, 2.0, 1.2])
+            
         for row_idx, row in enumerate(table.rows):
             is_header = (row_idx == 0)
+            
+            # Chống ngắt hàng qua trang và lặp header
+            trPr = row._tr.get_or_add_trPr()
+            trPr.append(parse_xml(f'<w:cantSplit {nsdecls("w")}/>'))
+            if is_header:
+                trPr.append(parse_xml(f'<w:tblHeader {nsdecls("w")}/>'))
+                
             for col_idx, cell in enumerate(row.cells):
                 set_cell_border(cell)
                 cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+                    
                 if is_header:
                     set_cell_shading(cell, "F2F2F2")
                     
@@ -248,13 +301,14 @@ def insert_paragraph_after(paragraph, text="", size_pt=11, italic=True, bold=Fal
     return new_para
 
 def put_image_in_paragraph(paragraph, img_path: str, width_cm: float = 10.0):
-    """Đặt ảnh căn giữa vào đoạn văn bản."""
+    """Đặt ảnh căn giữa vào đoạn văn bản và giữ liền với chú thích."""
     paragraph.text = ""
     paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
     pf = paragraph.paragraph_format
     pf.first_line_indent = Cm(0)
-    pf.space_before = Pt(6)
+    pf.space_before = Pt(4)
     pf.space_after = Pt(2)
+    pf.keep_with_next = True  # Giữ ảnh luôn đi cùng chú thích ở dưới
     r = paragraph.add_run()
     r.add_picture(img_path, width=Cm(width_cm))
 
@@ -271,42 +325,41 @@ def insert_images_and_captions(doc: Document, images_dir: str) -> None:
     """
     import unicodedata
     
-    # Định nghĩa danh sách các điểm chèn
-    # (regex_marker, [(image_pattern, caption_text, width_cm)])
+    # Định nghĩa danh sách các điểm chèn tối ưu kích thước cân đối
     configs = [
         (
             re.compile(r'^(Ảnh|ảnh)\s+1\b', re.IGNORECASE),
-            [("Ảnh 1.jpg", "Ảnh 1: Mã định danh và mã vạch quản lý bệnh phẩm", 9.5)]
+            [("Ảnh 1.jpg", "Ảnh 1: Mã định danh và mã vạch quản lý bệnh phẩm", 9.0)]
         ),
         (
             re.compile(r'^(Ảnh|ảnh)\s+2\b', re.IGNORECASE),
-            [("Ảnh 2.jpg", "Ảnh 2: Tai nghe có dây tích hợp micro thu nhận giọng nói", 8.0)]
+            [("Ảnh 2.jpg", "Ảnh 2: Tai nghe có dây tích hợp micro thu nhận giọng nói", 6.8)]
         ),
         (
             re.compile(r'^(Ảnh|ảnh)\s+3\b', re.IGNORECASE),
             [
-                ("Ảnh 3.2.jpg", "Ảnh 3a: Webcam Logitech C920e độ phân giải Full HD", 7.5),
-                ("Ảnh 3.jpg", "Ảnh 3b: Vị trí lắp đặt webcam cố định trong hộp chụp", 9.5)
+                ("Ảnh 3.2.jpg", "Ảnh 3a: Webcam Logitech C920e độ phân giải Full HD", 6.5),
+                ("Ảnh 3.jpg", "Ảnh 3b: Vị trí lắp đặt webcam cố định trong hộp chụp", 8.2)
             ]
         ),
         (
             re.compile(r'^(Ảnh|ảnh)\s+4\b', re.IGNORECASE),
-            [("Ảnh 4.jpg", "Ảnh 4: Hộp chụp ảnh tích hợp hệ thống chiếu sáng", 9.5)]
+            [("Ảnh 4.jpg", "Ảnh 4: Hộp chụp ảnh tích hợp hệ thống chiếu sáng", 8.8)]
         ),
         (
             re.compile(r'^(Ảnh|ảnh)\s+5\b', re.IGNORECASE),
-            [("Ảnh 5.jpg", "Ảnh 5: Đế đặt bệnh phẩm có định vị trường quan sát", 9.5)]
+            [("Ảnh 5.jpg", "Ảnh 5: Đế đặt bệnh phẩm có định vị trường quan sát", 8.8)]
         ),
         (
             re.compile(r'^(Ảnh|ảnh)\s+6\b', re.IGNORECASE),
-            [("Ảnh 6.jpg", "Ảnh 6: Bàn đạp chân USB kích hoạt lệnh chụp ảnh rảnh tay", 9.5)]
+            [("Ảnh 6.jpg", "Ảnh 6: Bàn đạp chân USB kích hoạt lệnh chụp ảnh rảnh tay", 8.5)]
         ),
         (
             re.compile(r'^(Ảnh|ảnh)\s+7\b', re.IGNORECASE),
             [
-                ("Ảnh 7.1.jpg", "Ảnh 7a: Thao tác tiếp nhận và chụp lưu mẫu bệnh phẩm tại Khoa", 9.5),
-                ("Ảnh 7.2.jpg", "Ảnh 7b: Giao diện tiếp nhận và quản lý thông tin bệnh phẩm", 9.5),
-                ("Ảnh 7.3.jpg", "Ảnh 7c: Hồ sơ bằng chứng số được liên kết và lưu trữ hoàn chỉnh", 12.0)
+                ("Ảnh 7.1.jpg", "Ảnh 7a: Thao tác tiếp nhận và chụp lưu mẫu bệnh phẩm tại Khoa", 7.6),
+                ("Ảnh 7.2.jpg", "Ảnh 7b: Giao diện tiếp nhận và quản lý thông tin bệnh phẩm", 7.6),
+                ("Ảnh 7.3.jpg", "Ảnh 7c: Hồ sơ bằng chứng số được liên kết và lưu trữ hoàn chỉnh", 11.5)
             ]
         ),
     ]
@@ -318,7 +371,6 @@ def insert_images_and_captions(doc: Document, images_dir: str) -> None:
             
         for marker_re, img_items in configs:
             if marker_re.search(t):
-                # Tìm thấy vị trí đánh dấu ảnh
                 curr_anchor = p
                 first = True
                 for img_pattern, caption_text, width_cm in img_items:
@@ -380,7 +432,8 @@ def build_standardized_m7(input_path: str, output_path: str, images_dir: str) ->
     print("[*] 3. Chèn 10 hình ảnh và chú thích vào đúng vị trí...")
     insert_images_and_captions(doc, images_dir)
 
-    print("[*] 4. Áp dụng chuẩn Typography (Times New Roman 13pt, căn đều, thụt dòng)...")
+    print("[*] 4. Loại bỏ các đoạn trống thừa và áp dụng chuẩn Typography...")
+    remove_redundant_empty_paragraphs(doc)
     apply_typography(doc)
     format_date_paragraph(doc)
 
