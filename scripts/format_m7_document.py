@@ -365,6 +365,26 @@ def set_cell_no_border(cell):
     )
     tcPr.append(parse_xml(borders_xml))
 
+def set_table_no_borders(table):
+    """Đặt toàn bộ viền bảng về none để ẩn hoàn toàn đường viền."""
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+    tblPr = table._tbl.tblPr
+    tblBorders = tblPr.find(qn('w:tblBorders'))
+    if tblBorders is not None:
+        tblPr.remove(tblBorders)
+    borders_xml = (
+        f'<w:tblBorders {nsdecls("w")}>'
+        f'<w:top w:val="none"/>'
+        f'<w:left w:val="none"/>'
+        f'<w:bottom w:val="none"/>'
+        f'<w:right w:val="none"/>'
+        f'<w:insideH w:val="none"/>'
+        f'<w:insideV w:val="none"/>'
+        f'</w:tblBorders>'
+    )
+    tblPr.append(parse_xml(borders_xml))
+
 def insert_side_by_side_image_table(doc: Document, paragraph, img_items, total_width_cm: float = 16.5):
     """
     Tạo một bảng 2 hàng, N cột ẩn viền để đặt các ảnh và chú thích cạnh nhau trên cùng 1 hàng:
@@ -380,6 +400,7 @@ def insert_side_by_side_image_table(doc: Document, paragraph, img_items, total_w
     table = doc.add_table(rows=2, cols=cols)
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.autofit = False
+    set_table_no_borders(table)
     paragraph._p.addnext(table._tbl)
 
     for row in table.rows:
@@ -462,7 +483,7 @@ def insert_images_and_captions(doc: Document, images_dir: str) -> None:
             re.compile(r'^(Ảnh|ảnh)\s+7\b', re.IGNORECASE),
             [
                 ("Ảnh 7.1.jpg", "Ảnh 7a: Tiếp nhận và chụp lưu mẫu", 4.8),
-                ("Ảnh 7.2.jpg", "Ảnh 7b: Giao diện tiếp nhận", 4.8),
+                ("Ảnh 7.2.jpg", "Ảnh 7b: Giao diện tiếp nhận thông tin", 4.8),
                 ("Ảnh 7.3.jpg", "Ảnh 7c: Hồ sơ bằng chứng số", 4.8)
             ]
         ),

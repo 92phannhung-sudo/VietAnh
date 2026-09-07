@@ -1,6 +1,34 @@
 # NHẬT KÝ HOẠT ĐỘNG DỰ ÁN (WORK LOG)
 *Cập nhật tự động bởi Agent*
 
+## 2026-09-07 — Triển khai bố cục ảnh hàng ngang (Side-by-Side) & Tối ưu báo cáo đạt đúng 20 trang
+- **Trạng thái chung:** Hoàn thành (Cổng 4: VERIFICATION & HANDOFF)
+- **Nhánh:** `main`
+- **Nhiệm vụ:** Gom các cụm 2-3 ảnh vào chung 1 hàng (side-by-side) bằng bảng ẩn viền và tinh chỉnh bố cục, giãn dòng 1.15 lines để toàn bộ tài liệu M7 đạt chính xác 20 trang theo Nghị định 30/2020/NĐ-CP.
+
+### 1. Các việc đã hoàn thành
+- [x] **Task 1: Tạo bảng ảnh hàng ngang ẩn viền (`insert_side_by_side_image_table`):**
+  - Tạo bảng 2 hàng không viền (`tcBorders` và `tblBorders` đều đặt `none`), có thuộc tính `cantSplit` chống ngắt trang.
+  - Cụm Ảnh 3 (2 ảnh: Ảnh 3a webcam và Ảnh 3b vị trí gắn hộp) xếp cạnh nhau trên 1 hàng (mỗi ảnh 5.5cm).
+  - Cụm Ảnh 7 (3 ảnh: Ảnh 7a tiếp nhận, Ảnh 7b giao diện, Ảnh 7c bằng chứng số) xếp cạnh nhau trên 1 hàng (mỗi ảnh 4.8cm).
+  - Điều chỉnh kích thước các ảnh đơn (Ảnh 1, 2, 4, 5, 6) từ 8.5–9cm về 5.5–6.5cm để cân đối với văn bản.
+  - Commit: `4e70c82`.
+- [x] **Task 2: Tinh chỉnh Typography và Spacing hướng tới mục tiêu đúng 20 trang:**
+  - Áp dụng giãn dòng `1.15 lines` (chuẩn Nghị định 30/2020/NĐ-CP).
+  - Spacing after đoạn thân bài: `Pt(1.5)`; khoảng cách trước/sau đề mục: `Pt(4)/Pt(2)`.
+  - TDD: Cập nhật unit test `test_typography` và `test_insert_side_by_side_image_table` (Pass 6/6 tests).
+  - Commit: `d69c0df`.
+- [x] **Task 3: Tái tạo tài liệu M7 Word, Xác minh 20 trang và Bàn giao:**
+  - Chạy `python3 scripts/format_m7_document.py` cập nhật trực tiếp `docs/report/M7_Thuyet_minh_Cong_trinh_ChuanHoa.docx`.
+  - Đối soát xuất PDF và kiểm tra `pdfinfo`: Số trang đạt chính xác **20 trang**.
+  - Trang 20 kết thúc trọn vẹn gồm 2 đoạn kết luận Mục 5 + Ngày tháng địa danh + Bảng chữ ký tác giả.
+  - Kiểm thử toàn bộ dự án: 63/63 tests PASS (3 skipped macOS).
+
+### 2. Nợ kỹ thuật phát sinh (Technical Debt)
+- Không phát sinh nợ kỹ thuật mới.
+
+---
+
 ## 2026-09-07 — Khắc phục triệt để lỗi giãn cách chữ (Stretched Justification) tại Mục 2.3.4
 - **Trạng thái chung:** Hoàn thành (Cổng 4: VERIFICATION & HANDOFF)
 - **Nhánh:** `main`
